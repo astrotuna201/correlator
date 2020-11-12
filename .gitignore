@@ -2,20 +2,34 @@
 .svn
 .DS_Store
 *.[ao]
+*.pyc
+*~
+.project
+.pydevproject
+libcore.dylib
+py_correlator.so
 
 # ignored directories
+.vscode/
+app/.vscode/
 app/.eggs/
 app/build/
 app/dist/
-
+app/experimental/
+app/intel/
+app/unused/
 
 # this and a few subfiles are in the repo, but I don't think it's being used at all
 bin/Correlator.app/
-
+bin/static/
 bin/CorrelatorNoFrame.app/
 bin/public-export/
 bin/static/build/
 bin/static/Correlator.app/
+bin/static/icons/
+bin/static/help/
+bin/static/images/
+bin/static/tmp/
 
 lib/
 releases/

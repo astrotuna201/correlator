@@ -24,13 +24,14 @@ from importManager import py_correlator
 
 import canvas
 import dialog
+from smooth import SmoothParameters
 import splice
 
 def opj(path):
 	"""Convert paths to the platform-specific separator"""
 	return apply(os.path.join, tuple(path.split('/')))
 
-
+# The Toolbar.
 class TopMenuFrame(wx.Frame):
 	def __init__(self, parent):
 		wx.Frame.__init__(self, parent, -1, "Tool Bar",
@@ -38,79 +39,81 @@ class TopMenuFrame(wx.Frame):
 						 style=wx.DEFAULT_DIALOG_STYLE | wx.NO_FULL_REPAINT_ON_RESIZE | wx.FRAME_FLOAT_ON_PARENT | wx.FRAME_TOOL_WINDOW)
 
 		self.parent = parent
-		
 		frameSizer = wx.BoxSizer(wx.VERTICAL)
-		
-		vbox = wx.FlexGridSizer(9, 1, vgap=5)
-		self.dbbtn = wx.Button(self, -1, "Go to Display")
+
+		# initially use wider string so SetSizerAndFit() below makes frame wide enough.
+		self.dbbtn = wx.Button(self, -1, "Go to Data Manager")
 		self.Bind(wx.EVT_BUTTON, self.OnDB, self.dbbtn)
-		vbox.Add(self.dbbtn, 0, wx.EXPAND)
+		frameSizer.Add(self.dbbtn, 1, wx.EXPAND | wx.BOTTOM, 5)
 
 		savebtn = wx.Button(self, -1, "Save")
 		self.Bind(wx.EVT_BUTTON, self.OnSAVE, savebtn)
-		vbox.Add(savebtn, 0, wx.EXPAND)
+		frameSizer.Add(savebtn, 1, wx.EXPAND | wx.BOTTOM, 5)
 
-		self.cntbtn = wx.Button(self, -1, "Connect to Corelyzer")
-		self.Bind(wx.EVT_BUTTON, self.OnCONNECT, self.cntbtn)
-		vbox.Add(self.cntbtn, 0, wx.EXPAND)
+		# # self.cntbtn = wx.Button(self, -1, "Connect to Corelyzer")
+		# # self.Bind(wx.EVT_BUTTON, self.OnCONNECT, self.cntbtn)
+		# # vbox.Add(self.cntbtn, 0, wx.EXPAND)
 
 		self.drawingbtn = wx.Button(self, -1, "Discrete Points")
+		frameSizer.Add(self.drawingbtn, 1, wx.EXPAND | wx.BOTTOM, 5)
 		self.Bind(wx.EVT_BUTTON, self.OnDRAWMODE, self.drawingbtn)
-		vbox.Add(self.drawingbtn, 0, wx.EXPAND)
 		
-		self.compositeBtn = wx.Button(self, -1, "Go to Composite")
-		vbox.Add(self.compositeBtn, 0, wx.EXPAND)
-		self.Bind(wx.EVT_BUTTON, self.OnComposite, self.compositeBtn)
+		# self.compositeBtn = wx.Button(self, -1, "Go to Composite")
+		# frameSizer.Add(self.compositeBtn, 1, wx.EXPAND | wx.BOTTOM, 5)
+		# self.Bind(wx.EVT_BUTTON, self.OnComposite, self.compositeBtn)
 		
-		self.spliceBtn = wx.Button(self, -1, "Go to Splice")
-		vbox.Add(self.spliceBtn, 0, wx.EXPAND)
-		self.Bind(wx.EVT_BUTTON, self.OnSplice, self.spliceBtn)
+		# self.spliceBtn = wx.Button(self, -1, "Go to Splice")
+		# frameSizer.Add(self.spliceBtn, 1, wx.EXPAND | wx.BOTTOM, 5)
+		# self.Bind(wx.EVT_BUTTON, self.OnSplice, self.spliceBtn)
 
-		self.filterBtn = wx.Button(self, -1, "Go to Filters")
-		vbox.Add(self.filterBtn, 0, wx.EXPAND)
-		self.Bind(wx.EVT_BUTTON, self.OnFilter, self.filterBtn)
+		# self.filterBtn = wx.Button(self, -1, "Go to Filters")
+		# frameSizer.Add(self.filterBtn, 1, wx.EXPAND | wx.BOTTOM, 5)
+		# self.Bind(wx.EVT_BUTTON, self.OnFilter, self.filterBtn)
 		
-		self.prefsBtn = wx.Button(self, -1, "Go to Display Prefs")
-		vbox.Add(self.prefsBtn, 0, wx.EXPAND)
-		self.Bind(wx.EVT_BUTTON, self.OnPrefs, self.prefsBtn)
+		# self.prefsBtn = wx.Button(self, -1, "Go to Display Prefs")
+		# frameSizer.Add(self.prefsBtn, 1, wx.EXPAND | wx.BOTTOM, 5)
+		# self.Bind(wx.EVT_BUTTON, self.OnPrefs, self.prefsBtn)
 
 		exitbtn = wx.Button(self, -1, "Exit Correlator")
+		frameSizer.Add(exitbtn, 1, wx.EXPAND)
 		self.Bind(wx.EVT_BUTTON, self.OnEXIT, exitbtn)
-		vbox.Add(exitbtn, 0, wx.EXPAND)
 
-		frameSizer.Add(vbox, 1, wx.EXPAND | wx.ALL, 2)
 		self.SetSizerAndFit(frameSizer)
+
+ 		# Now that we've fit to wider "Go to Data Manager" string,
+		# set dbbtn to correct initial string.
+		self.dbbtn.SetLabel("Go to Display")
 
 		self.SetBackgroundColour(wx.Colour(255, 255, 255))
 		wx.EVT_CLOSE(self, self.OnHide)
 
 	def OnHide(self, event):
-		self.parent.optPanel.tool.SetValue(False)
 		self.Show(False)
 		self.parent.mitool.Check(False)
 		self.parent.Window.SetFocusFromKbd()
 
-	def OnNEW(self, event):
-		if self.parent.CurrentDir != '' :
-			if self.parent.CHECK_CHANGES() == True :
-				ret = self.parent.OnShowMessage("About", "Do you want to save changes?", 2)		
-				if ret == wx.ID_OK :
-					self.OnSAVE(event)
-		if self.parent.client != None and self.parent.Window.HoleData != [] :
-			#ret = py_correlator.getData(18)
-			#self.parent.ParseSectionSend(ret, "delete_section")
-			self.parent.client.send("delete_all\n")
+	# unused
+	# def OnNEW(self, event):
+	# 	if self.parent.CurrentDir != '' :
+	# 		if self.parent.UnsavedChanges() == True :
+	# 			ret = self.parent.OnShowMessage("About", "Do you want to save changes?", 2)		
+	# 			if ret == wx.ID_OK :
+	# 				self.OnSAVE(event)
+	# 	if self.parent.client != None and self.parent.Window.HoleData != [] :
+	# 		#ret = py_correlator.getData(18)
+	# 		#self.parent.ParseSectionSend(ret, "delete_section")
+	# 		self.parent.client.send("delete_all\n")
 
-		self.parent.CurrentDir = ''
+	# 	self.parent.CurrentDir = ''
 
-		self.parent.compositePanel.saveButton.Enable(False)
-		self.parent.splicePanel.saveButton.Enable(False)
-		self.parent.eldPanel.saveButton.Enable(False)
-		self.parent.autoPanel.saveButton.Enable(False)
-		self.parent.INIT_CHANGES()
+	# 	self.parent.compositePanel.saveButton.Enable(False)
+	# 	self.parent.splicePanel.saveButton.Enable(False)
+	# 	self.parent.eldPanel.saveButton.Enable(False)
+	# 	self.parent.autoPanel.saveButton.Enable(False)
+	# 	self.parent.INIT_CHANGES()
 
-		self.parent.OnNewData(None)
-		self.parent.Window.SetFocusFromKbd()
+	# 	self.parent.OnNewData(None)
+	# 	self.parent.Window.SetFocusFromKbd()
 
 
 	def OnDRAWMODE(self, event):
@@ -123,12 +126,12 @@ class TopMenuFrame(wx.Frame):
 		if self.parent.dataFrame.IsShown() == False :
 			self.parent.Window.UpdateDrawing()
 
-	def OnCONNECT(self, event):
-		ret = self.parent.OnCONNECTION(event)
-		if ret == True :
-			self.cntbtn.SetLabel("Close Connection")
-		else :
-			self.cntbtn.SetLabel("Connect to Corelyzer")
+	# def OnCONNECT(self, event):
+	# 	ret = self.parent.OnCONNECTION(event)
+	# 	if ret == True :
+	# 		self.cntbtn.SetLabel("Close Connection")
+	# 	else :
+	# 		self.cntbtn.SetLabel("Connect to Corelyzer")
 
 	def OnDB(self, event):
 		if self.dbbtn.GetLabel() == "Go to Data Manager" :
@@ -137,68 +140,52 @@ class TopMenuFrame(wx.Frame):
 			self.parent.ShowDisplay()
 
 	def OnSAVE(self, event):
-		if self.parent.CurrentDir == '' : 
-			self.parent.OnShowMessage("Error", "There is no data loaded", 1)
+		if self.parent.CurrentDir == '': 
+			self.parent.OnShowMessage("Error", "There is no data loaded.", 1)
 			return
 
-		savedialog = dialog.SaveTableDialog(None, -1, self.parent.affineManager.isDirty(), self.parent.spliceManager.isDirty())
-		savedialog.Centre()
-		ret = savedialog.ShowModal()
-		
-		eld_flag = savedialog.eldCheck.GetValue()
-		age_flag =  savedialog.ageCheck.GetValue()
-		series_flag = savedialog.seriesCheck.GetValue()
-
-		if ret == wx.ID_CANCEL :
+		# We want to encourage users to save affine and splices together in the hopes that for
+		# the most part, the file numbers of comapatible affines and splices will be the same.
+		# Save splice if it's changed, or if there's at least one interval to save, even if
+		# nothing has changed. spliceManager.dirty implies at least one interval - it's set to
+		# False if the only interval in the splice was deleted.
+		saveSplice = self.parent.spliceManager.dirty or self.parent.spliceManager.count() > 0
+		enableUpdateExisting = self.parent.affineManager.currentAffineFile is not None and self.parent.spliceManager.currentSpliceFile is not None
+		# enableUpdateExisting = self.parent.affineManager.currentAffineFile is not None or self.parent.spliceManager.currentSpliceFile is not None
+		if not enableUpdateExisting:
+			if saveSplice:
+				msg = "Create new affine and splice files?"
+			else:
+				msg = "Create new affine file?"
+		else:
+			msg = "Create new affine and splice, or update existing files?"
+			#msg = "Save new affine{}, or update existing file{}?".format(" and splice" if saveSplice else "", "s" if saveSplice else "")
+		dlg = dialog.SaveDialog(self.parent, msg, enableUpdateExisting)
+		ret = dlg.ShowModal()
+		dlg.Destroy()
+	
+		updateExisting = False
+		if ret in [wx.ID_OK, wx.ID_YES]:
+			updateExisting = (ret == wx.ID_OK)
+		else: # canceled
 			return
-		
-		# affine
-		affine_filename = "";
-		if savedialog.affineCheck.GetValue():
-			affine_filename = self.parent.dataFrame.Add_TABLE("AFFINE" , "affine", savedialog.affineUpdate.GetValue(), False, "")
-			self.parent.affineManager.save(affine_filename)
-			#py_correlator.saveAttributeFile(affine_filename, 1)
 
-			s = "Save Affine Table: " + affine_filename + "\n\n"
-			self.parent.logFileptr.write(s)
-			self.parent.AffineChange = False  
-		# splice
-		if savedialog.spliceCheck.GetValue():
-			if self.parent.spliceManager.count() > 0:
-				filename = self.parent.dataFrame.Add_TABLE("SPLICE" , "splice", savedialog.spliceUpdate.GetValue(), False, "")
-				self.parent.spliceManager.save(filename)
+		# If we add an entry to the Data Manager, there must be a file to save! Don't want to end up
+		# adding an entry and not saving the associated file. Shouldn't be a problem with affines, but
+		# SpliceController will not save an empty splice. saveSplice var should prevent that situation.
+		if updateExisting: # save each as normal
+			affineFile = self.parent.dataFrame.Add_TABLE("AFFINE", "affine", updateExisting, False, "")
+			if saveSplice:
+				spliceFile = self.parent.dataFrame.Add_TABLE("SPLICE", "splice", updateExisting, False, "")
+		else: # Create New - find lowest available table number and use to save affine or both files
+			newFileNum = self.parent.dataFrame.GetNextSavedTableNumber(affine=True, splice=saveSplice)
+			affineFile = self.parent.dataFrame.Add_TABLE("AFFINE", "affine", updateExisting, False, "", newFileNum)
+			if saveSplice:
+				spliceFile = self.parent.dataFrame.Add_TABLE("SPLICE", "splice", updateExisting, False, "", newFileNum)
 
-				s = "Save Splice Table: " + filename + "\n\n"
-				self.parent.logFileptr.write(s)
-				self.parent.SpliceChange = False  
-
-		if eld_flag == True :
-			if self.parent.Window.LogData != [] :
-				filename = self.parent.dataFrame.Add_TABLE("ELD" , "eld", savedialog.eldUpdate.GetValue(), False, "")
-				py_correlator.saveAttributeFile(filename, 4)
-
-				s = "Save ELD Table: " + filename + "\n\n"
-				self.parent.logFileptr.write(s)
-				self.parent.EldChange = False  
-
-		if age_flag == True :
-			filename = self.parent.dataFrame.OnSAVE_AGES(savedialog.ageUpdate.GetValue(), False)
-			s = "Save Age/Depth: " + filename + "\n\n"
-			self.parent.logFileptr.write(s)
-			self.parent.AgeChange = False  
-
-		if series_flag == True :
-			if self.parent.Window.AgeDataList != [] :
-				filename = self.parent.dataFrame.OnSAVE_SERIES(savedialog.seriesUpdate.GetValue(), False)
-				s = "Save Age Model : " + filename + "\n\n"
-				self.parent.logFileptr.write(s)
-				self.parent.TimeChange = False  
-
-		savedialog.Destroy()
-		self.parent.OnShowMessage("Information", "Successfully Saved", 1)
-
-		#self.parent.Window.SetFocusFromKbd()
-
+		self.parent.affineManager.save(affineFile)
+		if saveSplice:
+			self.parent.spliceManager.save(spliceFile)
 
 	def OnSPLICE(self, event):
 		if self.parent.Window.ShowSplice == True :
@@ -224,20 +211,22 @@ class TopMenuFrame(wx.Frame):
 		self.parent.Window.UpdateDrawing()
 		self.parent.Window.SetFocusFromKbd()
 
-	def OnComposite(self, event):
-		self.parent.Window.sideNote.SetSelection(1)
+	# def OnComposite(self, event):
+	# 	self.parent.Window.sideNote.SetSelection(1)
 	
-	def OnSplice(self, event):
-		self.parent.Window.sideNote.SetSelection(2)
+	# def OnSplice(self, event):
+	# 	self.parent.Window.sideNote.SetSelection(2)
 
-	def OnFilter(self, event):
-		self.parent.Window.sideNote.SetSelection(5)
+	# def OnFilter(self, event):
+	# 	self.parent.Window.sideNote.SetSelection(3)
+	# 	# self.parent.Window.sideNote.SetSelection(5)
 	
-	def OnPrefs(self, event):
-		self.parent.Window.sideNote.SetSelection(6)
+	# def OnPrefs(self, event):
+	# 	self.parent.Window.sideNote.SetSelection(4)
+	# 	# self.parent.Window.sideNote.SetSelection(6)
 
 	def OnEXIT(self, event):
-		self.parent.OnExitButton(event)
+		self.parent.OnExitAction(event)
 
 class ProgressFrame(wx.Frame):
 	def __init__(self, parent, max):
@@ -350,6 +339,7 @@ class GrowthRatePlotCanvas(BetterLegendPlotCanvas):
 				self.UpdatePointLabel(mDataDict)
 		event.Skip() #go to next handler
 	
+	# find closest growth rate point and display its info
 	def MouseOverPoint(self, dc, mDataDict):
 		minDist = None
 		closest = None
@@ -362,9 +352,9 @@ class GrowthRatePlotCanvas(BetterLegendPlotCanvas):
 			if minDist is None or dist < minDist:
 				minDist = dist
 				closest = hd
-			
-		growthRate = round(closest.growthRate[0], 3) if not math.isnan(closest.growthRate[0]) else "undefined"		
-		self.statusText.SetLabel("{}{}: Growth rate {}".format(closest.hole, closest.core, growthRate))
+		if closest:
+			growthRate = round(closest.growthRate[0], 3) if not math.isnan(closest.growthRate[0]) else "undefined"
+			self.statusText.SetLabel("{}{}: Growth rate {}".format(closest.hole, closest.core, growthRate))
 	
 	# scrollMax = max scrollable depth in GUI
 	def UpdatePlot(self, holeData, startDepth, endDepth, scrollMax):
@@ -475,7 +465,7 @@ class CompositePanel():
 	def __init__(self, parent, mainPanel):
 		self.mainPanel = mainPanel
 		self.parent = parent
-		self.polyline_list =[]
+		self.polyline_list = []
 		self.growthPlotData = []
 		self.addItemsInFrame()
 		self.bestOffset = 0
@@ -541,10 +531,13 @@ class CompositePanel():
 		self.table.DisableDragRowSize()
 		self.table.EnableEditing(False)
 		self.table.CreateGrid(numRows=0, numCols=3)
-		for colidx, label in enumerate(["Core", "Shift", "Type"]):
+		for colidx, label in enumerate(["Core", "Offset", "Type"]):
 			self.table.SetColLabelValue(colidx, label)
 		self.table.SetSelectionMode(wx.grid.Grid.SelectRows)
+		self.breakTieButton = wx.Button(atPanel, -1, "Break TIE")
+		self.breakTieButton.Enable(False)
 		atsz.Add(self.table, 1, wx.EXPAND)
+		atsz.Add(self.breakTieButton, 0, wx.ALIGN_CENTER | wx.ALL, 5)
 		atPanel.SetSizer(atsz)
 		self.atPanel = atPanel		
 
@@ -552,7 +545,10 @@ class CompositePanel():
 		self.plotNote.AddPage(self.grPanel, "Growth Rate")
 		self.plotNote.AddPage(self.atPanel, "Shifts")
 		
+		# event handling
 		self.grPanel.Bind(wx.EVT_BUTTON, self.OnGrowthSettings, gpSettingsBtn)
+		self.atPanel.Bind(wx.EVT_BUTTON, self.OnBreakTie, self.breakTieButton)
+		self.atPanel.Bind(wx.grid.EVT_GRID_SELECT_CELL, self.OnShiftsTableSelection, self.table)
 
 		# add Notebook to main panel
 		self.plotNote.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.OnSelectPlotNote)
@@ -566,10 +562,9 @@ class CompositePanel():
 		self.xaxes = plot.PolyLine(xdata, legend='', colour='black', width =2)
 		ydata = [ (0, -1),( 0, 1) ]
 		self.yaxes = plot.PolyLine(ydata, legend='', colour='black', width =2)
-		
 		self.OnUpdatePlots()
 
-		# Panel 3
+		# affected cores and action type panel
 		panel3 = wx.Panel(self.mainPanel, -1)
 
 		sizer31 = wx.StaticBoxSizer(wx.StaticBox(panel3, -1, 'TIE Shift Options'), orient=wx.VERTICAL)
@@ -577,16 +572,16 @@ class CompositePanel():
 		self.applyCore.SetSelection(0)
 		sizer31.Add(self.applyCore, 0, wx.EXPAND | wx.BOTTOM, 5)
 		
-		# type depth panel
 		tdpSizer = wx.BoxSizer(wx.HORIZONTAL)
-		self.actionType = wx.Choice(panel3, -1, choices=["To tie", "To best correlation", "By given amount (m):"])
+		self.actionType = wx.Choice(panel3, -1, choices=["To tie", "To best correlation"])
 		self.actionType.SetSelection(0)
-		self.depthField = wx.TextCtrl(panel3, -1)
+		# hardcode width to prevent 'm' label being pushed too far right
+		self.depthField = wx.TextCtrl(panel3, -1, size=(80,-1))
+		self.depthField.Enable(False)
 		tdpSizer.Add(self.actionType, 0, wx.RIGHT, 5)
 		tdpSizer.Add(self.depthField)
+		tdpSizer.Add(wx.StaticText(panel3, -1, 'm'))
 		sizer31.Add(tdpSizer, 0, wx.EXPAND | wx.TOP, 5)
-		
-		self.mainPanel.Bind(wx.EVT_CHOICE, self.UpdateDepthField, self.actionType)
 		
 		commentSizer = wx.BoxSizer(wx.HORIZONTAL)
 		commentSizer.Add(wx.StaticText(panel3, -1, "Comment:"), 0, wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, 5)
@@ -611,9 +606,9 @@ class CompositePanel():
 		# Project... button
 		projectPanel = wx.Panel(self.mainPanel, -1)
 		setSizer = wx.StaticBoxSizer(wx.StaticBox(projectPanel, -1, "SET Dialog"), orient=wx.VERTICAL)
-		self.projectButton = wx.Button(projectPanel, -1, "SET By Growth Rate or %...")
-		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnProject, self.projectButton)
-		setSizer.Add(self.projectButton, 1, wx.EXPAND)
+		self.setButton = wx.Button(projectPanel, -1, "SET...")
+		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnProject, self.setButton)
+		setSizer.Add(self.setButton, 1, wx.EXPAND)
 		projectPanel.SetSizer(setSizer)
 		vbox.Add(projectPanel, 0, wx.EXPAND)
 
@@ -626,66 +621,54 @@ class CompositePanel():
 		sizer32.Add(self.undoButton, 0, wx.EXPAND)
 
 		undoPanel.SetSizer(sizer32)
-		vbox.Add(undoPanel, 0, wx.EXPAND)
+		vbox.Add(undoPanel, 0, wx.EXPAND | wx.BOTTOM, 10)
+		# vbox.Add(wx.StaticText(self.mainPanel, -1, '* Right-click tie for context menu', (5, 5)), 0, wx.BOTTOM, 5)
 
-		buttonsize = 130
-		if platform_name[0] == "Windows" :
-			buttonsize = 145
-			
-		vbox.Add(wx.StaticText(self.mainPanel, -1, '* Right-click tie for context menu', (5, 5)), 0, wx.BOTTOM, 5)
-
-		self.saveButton = wx.Button(self.mainPanel, -1, "Save Affine Table", size =(150, 30))
+		self.saveButton = wx.Button(self.mainPanel, -1, "Save Affine (and Splice if one exists)...")
 		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnSAVE, self.saveButton)
-		vbox.Add(self.saveButton, 0, wx.ALIGN_CENTER_VERTICAL)
+		vbox.Add(self.saveButton, 0, wx.EXPAND | wx.ALIGN_CENTER_VERTICAL | wx.BOTTOM, 2)
 		self.saveButton.Enable(False)
 
 		self.mainPanel.SetSizer(vbox)
-		
-		self.UpdateDepthField()
 
 	def OnInitUI(self):
 		self.adjustButton.Enable(False)
 		self.clearButton.Enable(False)
 		self.undoButton.Enable(False)
+
+	def EnableSETButton(self, enable):
+		self.setButton.Enable(enable)
 		
-	def UpdateDepthField(self, evt=None):
-		enableDepth = (self.actionType.GetSelection() == 2) # "By given amount"
-		self.depthField.Enable(enableDepth)
-
 	def OnSAVE(self, event):
-		dlg = dialog.Message3Button(self.parent, "Create new affine file?", yesLabel="Create New", okLabel="Update Existing", cancelLabel="Cancel")
-		ret = dlg.ShowModal()
-		dlg.Destroy()
-		if ret == wx.ID_OK or ret == wx.ID_YES :
-			updateExisting = ret == wx.ID_OK
-			filename = self.parent.dataFrame.Add_TABLE("AFFINE", "affine", updateExisting, False, "")
-			print "Save: updateExisting = {}, filename = {}".format(updateExisting, filename)
-			self.parent.affineManager.save(filename)
-
-	def OnButtonEnable(self, opt, enable):
-		if opt == 0 : 
-			self.adjustButton.Enable(enable)
-			self.clearButton.Enable(enable)
-			#self.aboveButton.Enable(enable)
-		elif opt == 1:
-			self.undoButton.Enable(enable)
-		else :
-			self.clearButton.Enable(enable)
-
-	def OnDismiss(self, evt):
-		self.Hide()
+		self.parent.topMenu.OnSAVE(event=None)
 
 	def OnAdjust(self, evt):
 		adjustCoreOnly = (self.applyCore.GetSelection() == 1) # 0 = this core and all below, 1 = this core only
-		self.parent.OnAdjustCore(adjustCoreOnly, self.GetShiftType())
+		self.parent.OnAdjustCore(adjustCoreOnly, self.GetActionType())
 
 		self.parent.Window.activeTie = -1
 		self.UpdateGrowthPlot()
 
+	# AffineTiePointChangeListener - update controls' state depending on
+    # new number of active affine tie points
+	def TiePointCountChanged(self, count):
+		if count == 0:
+			self.applyCore.Enable(False)
+			self.actionType.Enable(False)
+			self.adjustButton.Enable(False)
+			self.clearButton.Enable(False)
+			self.comment.Enable(False)
+		elif count == 1:
+			self.clearButton.Enable(True)
+		elif count == 2:
+			self.applyCore.Enable(True)
+			self.actionType.Enable(True)
+			self.adjustButton.Enable(True)
+			self.comment.Enable(True)
+
 	def OnClearTie(self, evt):
-		self.parent.Window.OnClearTies(0)
-		self.OnButtonEnable(0, False)
-		self.parent.Window.activeTie = -1
+		self.parent.Window.ClearCompositeTies()
+		self.parent.Window.UpdateDrawing() # or tie graphics won't clear until mouseover
 
 	def OnUndoAffineShift(self, evt):
 		self.parent.OnUndoAffineShift()
@@ -701,29 +684,41 @@ class CompositePanel():
 				self.parent.Window.OnUpdateTie(1)
 				
 	def OnGrowthSettings(self, evt):
-		min = self.parent.optPanel.min_depth.GetValue()
-		max = self.parent.optPanel.max_depth.GetValue()
+		min = self.parent.optPanel.depthRangeMin.GetValue()
+		max = self.parent.optPanel.depthRangeMax.GetValue()
 		dlg = dialog.DepthRangeDialog(self.plotNote, min, max)
 		pos = self.grText.GetScreenPositionTuple()
 		dlg.SetPosition(pos)
 		if dlg.ShowModal() == wx.ID_OK:
 			self.parent.optPanel.depthmax = dlg.outMax	# update mirrored prefs GUI (brgtodo 9/6/2014 gross)
-			self.parent.optPanel.min_depth.SetValue(str(dlg.outMin))
-			self.parent.optPanel.max_depth.SetValue(str(dlg.outMax))
-			self.parent.optPanel.slider2.SetValue(1)
+			self.parent.optPanel.depthRangeMin.SetValue(str(dlg.outMin))
+			self.parent.optPanel.depthRangeMax.SetValue(str(dlg.outMax))
+			self.parent.optPanel.depthZoomSlider.SetValue(1)
 			self.parent.OnUpdateDepthRange(dlg.outMin, dlg.outMax)
 
+	def OnBreakTie(self, evt):
+		row = self.table.GetSelectedRows()[0] # only one row can be selected
+		corestr = str(self.table.GetCellValue(row, 0)) # str() to convert from Unicode, col 0 is core
+		self.parent.affineManager.breakTie(corestr)
+		self.breakTieButton.Enable(False)
+
+	def OnShiftsTableSelection(self, evt):
+		shiftType = self.table.GetCellValue(evt.GetRow(), 2) # col 2 is shift type
+		self.breakTieButton.Enable("TIE" in shiftType)
+
 	def OnProject(self, evt):
-		dlg = dialog.ProjectDialog(self.parent)
+		dlg = dialog.SetDialog(self.parent)
 		dlg.Centre(wx.CENTER_ON_SCREEN)
 		result = dlg.ShowModal()
 		if result == wx.ID_OK:
 			if dlg.coreAndBelow.GetValue(): # SET current core and below
-				isRate = dlg.outRate is not None
+				isRate = dlg.percentRadio.GetValue()
 				value = dlg.outRate if isRate else dlg.outOffset
 				coreList = dlg.outCoreList
 				self.parent.affineManager.setAll(dlg.outHole, coreList, value, isRate, dlg.outType, dlg.outComment)
-			else:
+			elif dlg.coreAndChain.GetValue(): # entire chain
+				self.parent.affineManager.setChainRoot(dlg.outHole, dlg.outCore, dlg.outOffset, dlg.outType, dlg.outComment)
+			else: # current core only
 				self.parent.affineManager.set(dlg.outHole, dlg.outCore, dlg.outOffset, dlg.outType, dlg.outComment)
 
 			self.parent.AffineChange = True
@@ -737,20 +732,16 @@ class CompositePanel():
 
 			self.parent.UpdateData()
 			self.parent.UpdateStratData()
-			
-			if dlg.outCore == "All":
-				self.parent.Window.UpdateShiftedSpliceIntervals(dlg.outHole, '1', True)
-			else:
-				self.parent.Window.UpdateShiftedSpliceIntervals(dlg.outHole, dlg.outCore, False)
 			self.parent.Window.UpdateDrawing()
 
 	def OnUpdateDepth(self, data):
-		depth = int(10000.0 * float(data)) / 10000.0;
+		depth = int(10000.0 * float(data)) / 10000.0
 		self.depthField.SetValue(str(depth))
 
 	# brgtodo 9/4/2014: only called from this module, and always to set "empty" data:
 	# merge f'ns and add default params?
 	def OnUpdateData(self, data, bestdata, best):
+		self.polyline_list = []
 		self.bestOffset = best 
 		line = plot.PolyLine(data, legend='', colour='red', width =2) 
 		self.polyline_list.append(line)
@@ -759,14 +750,17 @@ class CompositePanel():
 			self.polyline_list.append(bestline)
 
 	# 9/18/2013 brg: Identical to OnUpdateData() above... and in SplicePanel
+	# plot correlation for datatype with which tie is being made
 	def OnAddFirstData(self, data, bestdata, best):
-		self.bestOffset = best 
+		self.polyline_list = []
+		self.bestOffset = best
 		line = plot.PolyLine(data, legend='', colour='red', width =2) 
 		self.polyline_list.append(line)
 		if bestdata != [] : 
 			bestline = plot.PolyLine(bestdata, legend='', colour='blue', width =5) 
 			self.polyline_list.append(bestline)
 
+	# plot correlation for datatypes with which tie is *not* being made
 	def OnAddData(self, data):
 		line = plot.PolyLine(data, legend='', colour='grey', width =2) 
 		self.polyline_list.append(line)
@@ -803,14 +797,14 @@ class CompositePanel():
 			return
 		
 	def UpdateEvalPlot(self):
-		self.corrPlotCanvas.Clear()
+		# self.corrPlotCanvas.Clear() - causes flicker on Mac
 		data = [(-self.parent.leadLag, 0), (0, 0), (self.parent.leadLag, 0)]
 		self.OnUpdateData(data, [], 0)
 		self.UpdateEvalStatus()
 		self.OnUpdateDrawing()
 		
 	def UpdateAffineTable(self):
-		affineRows = self.parent.affineManager.getAffineRows()
+		affineRows = self.parent.affineManager.getAffineRowsForUI()
 		
 		if len(affineRows) > self.table.GetNumberRows():
 			self.table.InsertRows(pos=0, numRows=len(affineRows))
@@ -831,9 +825,8 @@ class CompositePanel():
 	def OnUpdateDrawing(self):
 		self.polyline_list.append(self.xaxes)
 		self.polyline_list.append(self.yaxes)
-		gc = plot.PlotGraphics(self.polyline_list, 'Evaluation Graph', 'depth Axis', 'coef Axis')
+		gc = plot.PlotGraphics(self.polyline_list, xLabel='depth (m)', yLabel='correlation coefficient (r)')
 		self.corrPlotCanvas.Draw(gc, xAxis = (-self.parent.leadLag , self.parent.leadLag), yAxis = (-1, 1))
-		self.polyline_list = []
 		
 	def GetDepthValue(self):
 		return self.depthField.GetValue()
@@ -841,20 +834,18 @@ class CompositePanel():
 	def GetBestOffset(self):
 		return self.bestOffset
 	
-	# shiftType values do not correspond to order in self.actionType list
-	def GetShiftType(self):
-		shiftType = 0 # To best correlation
+	def GetActionType(self):
+		actionType = 0 # To best correlation
 		actionStr = self.actionType.GetStringSelection()
 		if actionStr == "To tie":
-			shiftType = 1
-		elif actionStr == "By given amount (m):":
-			shiftType = 2
-		return shiftType
+			actionType = 1
+		return actionType
 	
 	def GetComment(self):
 		return self.comment.GetValue()
 		
-
+# Obsolete, replaced by SpliceIntervalPanel but left as-is for now
+# to avoid issues with its tendrils in MainFrame. TODO 3/10/2019
 class SplicePanel():
 	def __init__(self, parent, mainPanel):
 		self.mainPanel = mainPanel
@@ -1053,7 +1044,7 @@ class SplicePanel():
 
 	def OnNEWSPLICE(self, event):
 		if self.parent.Window.SpliceData != [] :
-			if self.parent.CHECK_CHANGES() == True :
+			if self.parent.UnsavedChanges() == True :
 				ret = self.parent.OnShowMessage("About", "Do you want to save?", 2)
 				if ret == wx.ID_OK :
 					self.OnSAVE(event)
@@ -1253,7 +1244,7 @@ class SplicePanel():
 		self.parent.Update()
 
 	def OnUpdateDepth(self, data):
-		depth_value = int(10000.0 * float(data)) / 10000.0;
+		depth_value = int(10000.0 * float(data)) / 10000.0
 		self.depth.SetValue(str(depth_value))
 
 	def UpdateEvalStatus(self):
@@ -1355,34 +1346,34 @@ class EvalPlotPanel(wx.Panel):
 		self.crText.SetLabel("Step: {} | Window: {} | Lead/Lag: {}".format(roundedDepthStep, self.winLength, self.leadLag))
 		
 	def OnUpdateData(self, data, bestdata):
-		line = plot.PolyLine(data, legend='', colour='red', width =2) 
+		line = plot.PolyLine(data, legend='', colour='red', width=2)
 		self.polylines.append(line)
 		if bestdata != [] : 
-			bestline = plot.PolyLine(bestdata, legend='', colour='blue', width =5) 
+			bestline = plot.PolyLine(bestdata, legend='', colour='blue', width=5)
 			self.polylines.append(bestline)
 
 	def OnAddFirstData(self, data, bestdata, best):
-		line = plot.PolyLine(data, legend='', colour='red', width =2) 
+		line = plot.PolyLine(data, legend='', colour='red', width=2)
 		self.polylines.append(line)
 		if bestdata != [] : 
-			bestline = plot.PolyLine(bestdata, legend='', colour='blue', width =5) 
+			bestline = plot.PolyLine(bestdata, legend='', colour='blue', width=5)
 			self.polylines.append(bestline)
 
 	def OnAddData(self, data):
-		line = plot.PolyLine(data, legend='', colour='grey', width =2) 
+		line = plot.PolyLine(data, legend='', colour='grey', width=2)
 		self.polylines.append(line)
 
 	def OnUpdateDrawing(self): # called by client to redraw
 		# update axes
 		xdata = [ (-self.leadLag, 0), (0, 0), (self.leadLag, 0) ]
-		self.xaxes = plot.PolyLine(xdata, legend='', colour='black', width =2)
-		ydata = [ (0, -1),( 0, 1) ]
-		self.yaxes = plot.PolyLine(ydata, legend='', colour='black', width =2)
+		self.xaxes = plot.PolyLine(xdata, legend='', colour='black', width=2)
+		ydata = [ (0, -1),(0, 1) ]
+		self.yaxes = plot.PolyLine(ydata, legend='', colour='black', width=2)
 		self.polylines.append(self.xaxes)
 		self.polylines.append(self.yaxes)
 		
 		gc = plot.PlotGraphics(self.polylines, '', 'depth (m)', 'correlation coef (r)')
-		self.evalPlot.Draw(gc, xAxis = (-self.leadLag , self.leadLag), yAxis = (-1, 1))
+		self.evalPlot.Draw(gc, xAxis=(-self.leadLag , self.leadLag), yAxis=(-1, 1))
 		self.polylines = []
 
 
@@ -1437,16 +1428,16 @@ class SpliceIntervalPanel():
 		ctrlPanel = wx.Panel(panel, -1)
 		cpsz = wx.BoxSizer(wx.VERTICAL)
 		cbox = wx.StaticBoxSizer(wx.StaticBox(ctrlPanel, -1, "Interval Comments"))
-		self.commentText = dialog.CommentTextCtrl(ctrlPanel, -1, "[interval comment]", style=wx.TE_MULTILINE)
+		self.commentText = dialog.CommentTextCtrl(ctrlPanel, -1, "[interval comment]", style=wx.TE_MULTILINE, size=(-1, 100))
 		self.commentText.Bind(wx.EVT_KILL_FOCUS, self._saveComment)
-		cbox.Add(self.commentText, 1, wx.EXPAND)
-		cpsz.Add(cbox, 1, wx.EXPAND | wx.ALL, 5)
+		cbox.Add(self.commentText, 1)
+		cpsz.Add(cbox, 0, wx.EXPAND | wx.ALL, 5)
 
 		self.delButton = wx.Button(ctrlPanel, -1, "Delete Interval")
 		ctrlPanel.Bind(wx.EVT_BUTTON, self.OnDelete, self.delButton)
 		cpsz.Add(self.delButton, 0, wx.EXPAND | wx.ALL, 5)
 		ctrlPanel.SetSizer(cpsz)
-		psz.Add(ctrlPanel, 1, wx.EXPAND)
+		psz.Add(ctrlPanel, 0, wx.EXPAND)
 
 		# tie option buttons (split/tie)
 		tsbox = wx.StaticBoxSizer(wx.StaticBox(panel, -1, "Tie Options"), orient=wx.VERTICAL)	
@@ -1457,19 +1448,19 @@ class SpliceIntervalPanel():
 		tieSplitPanel.Bind(wx.EVT_BUTTON, self.OnBotTieButton, self.botTieButton)
 		tspsz = wx.FlexGridSizer(rows=2, cols=2, vgap=10)
 		tspsz.AddGrowableCol(1, proportion=1)
-		tspsz.Add(wx.StaticText(tieSplitPanel, -1, "Top: "), 1, wx.ALIGN_CENTER_VERTICAL)
-		tspsz.Add(self.topTieButton, 1, wx.EXPAND | wx.RIGHT, 10)
+		tspsz.Add(wx.StaticText(tieSplitPanel, -1, "Top: "), 1, wx.ALIGN_CENTER_VERTICAL | wx.ALIGN_RIGHT)
+		tspsz.Add(self.topTieButton, 1, wx.EXPAND | wx.ALIGN_CENTER_VERTICAL)
 		tspsz.Add(wx.StaticText(tieSplitPanel, -1, "Bottom: "), 1, wx.ALIGN_CENTER_VERTICAL)
-		tspsz.Add(self.botTieButton, 1, wx.EXPAND | wx.RIGHT, 10)
+		tspsz.Add(self.botTieButton, 1, wx.EXPAND | wx.ALIGN_CENTER_VERTICAL | wx.BOTTOM, 1)
 		tieSplitPanel.SetSizer(tspsz)
 		tsbox.Add(tieSplitPanel, 1, wx.EXPAND)
-		psz.Add(tsbox, 1, wx.EXPAND | wx.TOP, 10)
+		psz.Add(tsbox, 0, wx.EXPAND | wx.TOP, 10)
 		
 		self.altSpliceButton = wx.Button(panel, -1, "Select Alternate Splice...")
 		self.altSpliceButton.Bind(wx.EVT_BUTTON, self.OnAltSplice)
 		psz.Add(self.altSpliceButton, 0, wx.EXPAND | wx.ALL, 10)
 		
-		self.saveButton = wx.Button(panel, -1, "Save Splice...")
+		self.saveButton = wx.Button(panel, -1, "Save Splice and Affine...")
 		self.saveButton.Bind(wx.EVT_BUTTON, self.OnSave)
 		psz.Add(self.saveButton, 0, wx.EXPAND | wx.ALL, 10)
 				
@@ -1553,11 +1544,13 @@ class SpliceIntervalPanel():
 			label = "Split {}".format(tie.getButtonName())
 		return label
 
-	# update delete button, tie/split button label and enabled state
+	# Enable/disable buttons and update button text to reflect splice state
 	def _updateButtons(self):
 		hasSel = self.parent.spliceManager.hasSelection() 
 		self.delButton.Enable(hasSel)
-		self.saveButton.Enable(self.parent.spliceManager.count() > 0)
+		hasIntervals = self.parent.spliceManager.count() > 0
+		self.saveButton.Enable(hasIntervals)
+		self.altSpliceButton.Enable(hasIntervals)
 		if hasSel:
 			self.delButton.SetLabel("Delete Interval {}".format(self.parent.spliceManager.getSelected().getHoleCoreStr()))
 			
@@ -1614,21 +1607,9 @@ class SpliceIntervalPanel():
 			tie.tie()
 		self.UpdateUI()
 		self.parent.Window.UpdateDrawing()
-		
-	def OnSave(self, event):
-		dlg = dialog.Message3Button(self.parent, "Create new splice file?", yesLabel="Create New", okLabel="Update Existing", cancelLabel="Cancel")
-		ret = dlg.ShowModal()
-		dlg.Destroy()
-		if ret == wx.ID_OK or ret == wx.ID_YES :
-			updateExisting = ret == wx.ID_OK
-			filename = self.parent.dataFrame.Add_TABLE("SPLICE" , "splice", updateExisting, False, "")
-			print "Save: updateExisting = {}, filename = {}".format(updateExisting, filename)
-			self.parent.spliceManager.save(filename)
 
-			s = "Save Splice Table: " + filename + "\n"
-			self.parent.logFileptr.write(s)
-			self.parent.autoPanel.SetCoreList(1, [])
-			self.parent.OnShowMessage("Information", "Successfully Saved", 1)
+	def OnSave(self, event):
+		self.parent.topMenu.OnSAVE(event=None)
 	
 	def OnSelectRow(self, event):
 		self.parent.spliceManager.selectByIndex(event.GetRow())
@@ -1945,7 +1926,7 @@ class AutoPanel():
 				if str_list == "Splice" :
 					py_correlator.setCorrelate(str_list, "", squishstart, squishend, self.squishinterval, depthstart, depthend, self.depthinterval, depth_step)
 					ratio = py_correlator.getRatio(str_list, str_list)
-					ratio_str = int(1000.00 * float(ratio)) / 1000.00;
+					ratio_str = int(1000.00 * float(ratio)) / 1000.00
 					self.valueD2.SetValue(str(ratio_str))
 				else :
 					end = str_list.find(" ", 0)
@@ -1955,7 +1936,7 @@ class AutoPanel():
 					datatype = str_list[start:end]
 					py_correlator.setCorrelate(holename, datatype, squishstart, squishend, self.squishinterval, depthstart, depthend, self.depthinterval, depth_step)
 					ratio = py_correlator.getRatio(holename, datatype)
-					ratio_str = int(1000.00 * float(ratio)) / 1000.00;
+					ratio_str = int(1000.00 * float(ratio)) / 1000.00
 					self.valueD2.SetValue(str(ratio_str))
 				if self.spliceFlag == 0 : 
 					self.parent.Window.autocoreNo.append(i)
@@ -1999,7 +1980,7 @@ class AutoPanel():
 		index = 0 
 		for data in self.sortDataList :
 			rate, b, x, y = data
-			rate = int(100.0 * float(rate)) / 100.0;
+			rate = int(100.0 * float(rate)) / 100.0
 			result_txt = "r = " + str(rate) + " n = " + str(b) + " (" + str(index+1) + ")"	 
 			self.resultList.InsertItems([result_txt], index)	 
 			index = index + 1
@@ -2418,7 +2399,7 @@ class ELDPanel():
 		self.crText.SetLabel("Step: {} | Window: {} | Lead/Lag: {}".format(roundedDepthStep, self.parent.winLength, self.parent.leadLag))
 		
 	def OnUpdateDepth(self, data):
-		depthstep = int(10000.0 * float(data)) / 10000.0;
+		depthstep = int(10000.0 * float(data)) / 10000.0
 		self.depth.SetValue(str(depthstep))
 
 	def OnUpdateData(self, data, bestdata):
@@ -2700,15 +2681,15 @@ class AgeDepthPanel():
 		self.firstPntDepth = 0.0, self.startY
 
 	def OnAgeData(self, evt):
-                selected_item = "" 
-                if platform_name[0] == "Windows" :
-                        age_list = self.ageList.GetSelections()
-                        for sel in age_list :
-                                selected_item = self.ageList.GetString(sel)
-                else :
-                        selected_item = self.ageList.GetStringSelection()
+		selected_item = "" 
+		if platform_name[0] == "Windows":
+			age_list = self.ageList.GetSelections()
+			for sel in age_list:
+				selected_item = self.ageList.GetString(sel)
+		else:
+			selected_item = self.ageList.GetStringSelection()
 
-		self.selectedAge = False 
+		self.selectedAge = False
 		end = selected_item.find("*handpick", 0)
 		if end > 0 :
 			items = selected_item.split()
@@ -2798,20 +2779,20 @@ class AgeDepthPanel():
 		rate = py_correlator.getMcdRate(pickdepth)
 		if self.parent.Window.mbsfDepthPlot == 0 : 
 			pickdepth = (1.0 / rate) * pickmcd
-			pickdepth = int(100.0 * pickdepth) / 100.0;
+			pickdepth = int(100.0 * pickdepth) / 100.0
 		else :
 			pickmcd = rate * pickdepth
-			pickmcd = int(100.0 * pickmcd) / 100.0;
-                strItem = ""
+			pickmcd = int(100.0 * pickmcd) / 100.0
+			strItem = ""
 		str_ba = str(pickdepth)
 		max_ba = len(str_ba)
 		start_ba = str_ba.find('.', 0)
 		str_ba = str_ba[start_ba:max_ba]
 		max_ba = len(str_ba)
 		space_bar = ""
-		if platform_name[0] == "Windows" :
-                        space_bar = " "
-                        
+		if platform_name[0] == "Windows":
+			space_bar = " "
+						
 		if max_ba < 3 :
 			strItem = str(pickdepth) + "0 \t"
 		else :
@@ -2841,7 +2822,7 @@ class AgeDepthPanel():
 			self.parent.Window.maxAgeRange = int(pickage) + 2
 			self.maxAge.SetValue(str(self.parent.Window.maxAgeRange))
 
-		ba = int(1000.0 * float(pickage)) / 1000.0;
+		ba = int(1000.0 * float(pickage)) / 1000.0
 		str_ba = str(ba)
 		max_ba = len(str_ba)
 		start_ba = str_ba.find('.', 0)
@@ -2893,23 +2874,23 @@ class AgeDepthPanel():
 
 	def SetORIGIN(self, evt):
 		pickdepth = float(self.depth.GetValue())
-		pickdepth = int(100.0 * pickdepth) / 100.0;
+		pickdepth = int(100.0 * pickdepth) / 100.0
 		str_ba = str(pickdepth)
 		max_ba = len(str_ba)
 		start_ba = str_ba.find('.', 0)
 		str_ba = str_ba[start_ba:max_ba]
 		max_ba = len(str_ba)
 		space_bar = ""
-		if platform_name[0] == "Windows" :
-                        space_bar = " "
-                        
+		if platform_name[0] == "Windows":
+			space_bar = " "
+						
 		if max_ba < 3 :
 			strItem = str(pickdepth) + "0 \t"  + str(pickdepth) + "0 \t" + str(pickdepth) + "0 \t"
 		else :
 			strItem = str(pickdepth) + space_bar + "\t"  + str(pickdepth) + space_bar + "\t" + str(pickdepth) + space_bar + "\t"
 
 		pickage = float(self.age.GetValue())
-		pickage = int(1000.0 * pickage) / 1000.0;
+		pickage = int(1000.0 * pickage) / 1000.0
 		pickname = 'X'
 
 		str_ba = str(pickage)
@@ -3136,233 +3117,114 @@ class FilterPanel():
 		self.locked = False
 		self.prevSelected = 0
 		self.addItemsInFrame()
-		
+
+		# init undo members
+		self.deciUndo = [ "All Holes", "1" ]
+		self.deciBackup = [ "All Holes", "1" ]
+		self.smBackup = []
+		self.smUndo = []
+		self.cullBackup = [ "All Holes", False, "5.0", ">", "9999.99", True, "<", "-9999.99", False, "Use all cores", "999" ]
+		self.cullUndo = [ "All Holes", False, "5.0", ">", "9999.99", True, "<", "-9999.99", False, "Use all cores", "999" ]
+
 	def addItemsInFrame(self):
 		vbox_top = wx.BoxSizer(wx.VERTICAL)
 
-		vbox_top.Add(wx.StaticText(self.mainPanel, -1, "Set Filter Range : "), 0, wx.LEFT | wx.TOP, 9)
-
+		# Filter Range
+		vbox_top.Add(wx.StaticText(self.mainPanel, -1, "Apply Filters to Data Type: "), 0, wx.LEFT | wx.TOP, 9)
 		buttonsize = 290
-		if platform_name[0] == "Windows" :
-			buttonsize = 280
-			
 		self.all = wx.Choice(self.mainPanel, -1, (0,0), (buttonsize,-1))
 		self.all.SetForegroundColour(wx.BLACK)
-		vbox_top.Add(self.all, 0, wx.LEFT | wx.TOP, 9)
+		vbox_top.Add(self.all, 0, wx.ALL, 5)
 		self.mainPanel.Bind(wx.EVT_CHOICE, self.SetTYPE, self.all)
 
-		panel1 = wx.Panel (self.mainPanel, -1)
-		sizer1 = wx.StaticBoxSizer(wx.StaticBox(panel1, -1, 'Decimate'), orient=wx.HORIZONTAL)
+		### Decimate
+		decPanel = wx.Panel(self.mainPanel, -1)
+		decSizer = wx.StaticBoxSizer(wx.StaticBox(decPanel, -1, 'Decimate'), orient=wx.VERTICAL)
+		self.deciState = wx.StaticText(decPanel, -1, "None (show every point)")
+		decBtnPanel = wx.Panel(decPanel, -1)
+		decBtnSizer = wx.BoxSizer(wx.HORIZONTAL)
+
+		self.deciCreate = wx.Button(decBtnPanel, -1, "Create", size=(120, 30))
+		decPanel.Bind(wx.EVT_BUTTON, self.OnCreateDecimate, self.deciCreate)
+
+		self.deciDelete = wx.Button(decBtnPanel, -1, "Delete", size=(120, 30))
+		self.deciDelete.Enable(False)
+		decPanel.Bind(wx.EVT_BUTTON, self.OnClearDecimate, self.deciDelete)
+
+		decBtnSizer.Add(self.deciCreate, 0)
+		decBtnSizer.Add(self.deciDelete, 0)
+		decBtnPanel.SetSizer(decBtnSizer)
+
+		decSizer.Add(self.deciState, 1, wx.BOTTOM, 10)
+		decSizer.Add(decBtnPanel, 1, wx.EXPAND)
+		decPanel.SetSizer(decSizer)
+		vbox_top.Add(decPanel, 0, wx.TOP | wx.EXPAND, 5)
+
+		### Smoothing
+		smoothPanel = wx.Panel(self.mainPanel, -1)
+		smoothSizer = wx.StaticBoxSizer(wx.StaticBox(smoothPanel, -1, 'Gaussian Smoothing'), orient=wx.VERTICAL)
+		self.smoothState1 = wx.StaticText(smoothPanel, -1, "[Current smoothing state]")
+		self.smoothState2 = wx.StaticText(smoothPanel, -1, "[Smoothing style]")
+		smoothSizer.Add(self.smoothState1, 0, wx.BOTTOM)
+		smoothSizer.Add(self.smoothState2, 1, wx.BOTTOM, 10)
+
+		smoothBtnPanel = wx.Panel(smoothPanel, -1)
+		smoothBtnSizer = wx.BoxSizer(wx.HORIZONTAL)
 		
-		if platform_name[0] == "Windows" :		
-			sizer1.Add(wx.StaticText(panel1, -1, "Use every      "), 0, wx.TOP | wx.LEFT | wx.RIGHT, 5)
-			self.decimate = wx.TextCtrl(panel1, -1, "1", size=(80, 25), style=wx.SUNKEN_BORDER )
-			sizer1.Add(self.decimate, 0, wx.RIGHT, 5)
-			sizer1.Add(wx.StaticText(panel1, -1, " points              "), 0, wx.TOP | wx.RIGHT, 5)
-		else :
-			sizer1.Add(wx.StaticText(panel1, -1, "Use every      "), 0, wx.RIGHT, 5)
-			self.decimate = wx.TextCtrl(panel1, -1, "1", size=(80, 25), style=wx.SUNKEN_BORDER )
-			sizer1.Add(self.decimate, 0, wx.RIGHT, 5)
-			sizer1.Add(wx.StaticText(panel1, -1, " points          "), 0, wx.RIGHT, 5)
-		panel1.SetSizer(sizer1)
-		vbox_top.Add(panel1, 0, wx.BOTTOM | wx.LEFT | wx.TOP, 9)
+		self.smCreate = wx.Button(smoothBtnPanel, -1, "Create", size=(120, 30))
+		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnCreateSmooth, self.smCreate)
+		self.smDelete = wx.Button(smoothBtnPanel, -1, "Delete", size=(120, 30))
+		self.smDelete.Enable(False)
+		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnClearSmooth, self.smDelete)
+		smoothBtnSizer.Add(self.smCreate)
+		smoothBtnSizer.Add(self.smDelete)
+		smoothBtnPanel.SetSizer(smoothBtnSizer)
+		smoothSizer.Add(smoothBtnPanel)
 
-		gridApply1 = wx.GridSizer(1, 2)
-		deciBtn = wx.Button(self.mainPanel, -1, "Apply", size=(120, 30))
-		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnDecimate, deciBtn)
-		gridApply1.Add(deciBtn)
+		smoothPanel.SetSizer(smoothSizer)
+		vbox_top.Add(smoothPanel, 0, wx.TOP | wx.EXPAND, 5)
 
-		self.deciUndo = [ "All Holes", "1" ]
-		self.deciBackup = [ "All Holes", "1" ]
-		self.deciundoBtn = wx.Button(self.mainPanel, -1, "Undo", size=(120, 30))
-		self.deciundoBtn.Enable(False)
-		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnUNDODecimate, self.deciundoBtn)
-		if platform_name[0] == "Windows" :	
-			gridApply1.Add(self.deciundoBtn, 0, wx.LEFT, 20)
-		else :
-			gridApply1.Add(self.deciundoBtn, 0, wx.LEFT, 10)
+		### Culling
+		cullPanel = wx.Panel(self.mainPanel, -1)
+		cullSizer = wx.StaticBoxSizer(wx.StaticBox(cullPanel, -1, 'Cull'), orient=wx.VERTICAL)
 
-		vbox_top.Add(gridApply1, 0, wx.LEFT, 10)
+		self.cullState1 = wx.StaticText(cullPanel, -1, "[Cull from section tops]")
+		self.cullState2 = wx.StaticText(cullPanel, -1, "[Cull data values > X]")
+		self.cullState3 = wx.StaticText(cullPanel, -1, "[Cull data values < X]")
+		cullSizer.Add(self.cullState1)
+		cullSizer.Add(self.cullState2)
+		cullSizer.Add(self.cullState3, 1, wx.BOTTOM, 10)
+		cullPanel.SetSizer(cullSizer)
 
+		cullBtnPanel = wx.Panel(cullPanel, -1)
+		self.cullCreate = wx.Button(cullBtnPanel, -1, "Create", size=(120, 30))
+		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnCreateCull, self.cullCreate)
+		self.cullDelete = wx.Button(cullBtnPanel, -1, "Delete", size=(120, 30))
+		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnClearCull, self.cullDelete)
+		self.cullDelete.Enable(False)
 
-		panel2 = wx.Panel (self.mainPanel, -1)
-		sizer2 = wx.StaticBoxSizer(wx.StaticBox(panel2, -1, 'Smooth'), orient=wx.VERTICAL)
-		grid2 = wx.GridBagSizer(3, 3)
-		
-		if platform_name[0] == "Windows" :			
-			grid2.Add(wx.StaticText(panel2, -1, "Type"), (0,0), flag=wx.LEFT | wx.RIGHT, border=5)
-		else :
-			grid2.Add(wx.StaticText(panel2, -1, "Type"), (0,0), flag=wx.RIGHT, border=5)
-				
-		self.smoothcmd = wx.Choice(panel2, -1, (0,0), (180, -1), ("None", "Gaussian"))
-		self.smoothcmd.SetForegroundColour(wx.BLACK)
-		if platform_name[0] == "Windows" :		
-			grid2.Add(self.smoothcmd, (0,1), span=(1,2), flag=wx.RIGHT, border=5)
-		else :
-			grid2.Add(self.smoothcmd, (0,1), span=(1,2))
-					
-		if platform_name[0] == "Windows" :		
-			grid2.Add(wx.StaticText(panel2, -1, "Width"), (1,0), flag=wx.LEFT | wx.RIGHT, border=5)
-		else :
-			grid2.Add(wx.StaticText(panel2, -1, "Width"), (1,0), flag=wx.RIGHT, border=5)
-		
-		self.width = wx.TextCtrl(panel2, -1, "9", size=(60, 25), style=wx.SUNKEN_BORDER)
-		grid2.Add(self.width, (1,1), flag=wx.BOTTOM, border=3)
+		cullBtnSizer = wx.BoxSizer(wx.HORIZONTAL)
+		cullBtnSizer.Add(self.cullCreate)
+		cullBtnSizer.Add(self.cullDelete)
+		cullBtnPanel.SetSizer(cullBtnSizer)
+		cullSizer.Add(cullBtnPanel)
 
-		self.unitscmd = wx.Choice(panel2, -1, choices=["Points", "Depth(cm)"])
-		self.unitscmd.SetForegroundColour(wx.BLACK)
-		self.mainPanel.Bind(wx.EVT_CHOICE, self.SetUNIT, self.unitscmd)
-		grid2.Add(self.unitscmd, (1,2), flag=wx.ALIGN_CENTER_VERTICAL)
-
-		if platform_name[0] == "Windows":
-			grid2.Add(wx.StaticText(panel2, -1, "Display	         "), (2,0), flag=wx.RIGHT | wx.LEFT, border=5)
-		else:
-			grid2.Add(wx.StaticText(panel2, -1, "Display"), (2,0), flag=wx.RIGHT, border=5)
-		self.plotcmd = wx.Choice(panel2, -1, (0,0), (180, -1), ("UnsmoothedOnly", "SmoothedOnly", "Smoothed&Unsmoothed"))
-		self.plotcmd.SetForegroundColour(wx.BLACK)
-		if platform_name[0] == "Windows":
-			grid2.Add(self.plotcmd, (2,1), span=(1,2))
-		else:
-			grid2.Add(self.plotcmd, (2,1), span=(1,2))
-
-		sizer2.Add(grid2)
-		panel2.SetSizer(sizer2)
-		vbox_top.Add(panel2, 0, wx.BOTTOM | wx.TOP | wx.LEFT | wx.EXPAND, 9)
-
-		gridApply2 = wx.GridSizer(1, 2)
-		smBtn = wx.Button(self.mainPanel, -1, "Apply", size=(120, 30))
-		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnSmooth, smBtn)
-		gridApply2.Add(smBtn)
-
-		self.smBackup = []
-		self.smUndo = []
-
-		self.smundoBtn = wx.Button(self.mainPanel, -1, "Undo", size=(120, 30))
-		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnUNDOSmooth, self.smundoBtn)
-		#self.smundoBtn.Enable(False)
-		if platform_name[0] == "Windows":
-			gridApply2.Add(self.smundoBtn, 0, wx.LEFT, 20)
-		else:
-			gridApply2.Add(self.smundoBtn, 0, wx.LEFT, 10)
-		vbox_top.Add(gridApply2, 0, wx.LEFT, 10)
-
-		panel3 = wx.Panel(self.mainPanel, -1)
-		sizer3 = wx.StaticBoxSizer(wx.StaticBox(panel3, -1, 'Cull'), orient=wx.VERTICAL)
-
-		grid3 = wx.FlexGridSizer(2, 2)
-		self.nocull = wx.RadioButton(panel3, -1, "No cull", style=wx.RB_GROUP)
-		self.nocull.SetValue(True)
-		grid3.Add(self.nocull)
-		self.cull = wx.RadioButton(panel3, -1, "Use parameters ")
-		self.cull.SetValue(False)
-		grid3.Add(self.cull, 0, wx.BOTTOM, 15)
-
-		self.valueD = wx.TextCtrl(panel3, -1, "5.0", size=(80, 25), style=wx.SUNKEN_BORDER )
-		grid3.Add(self.valueD, 0, wx.RIGHT, 9)
-		grid3.Add(wx.StaticText(panel3, -1, "cm from each core top "), 0, wx.BOTTOM, 9)
-		if platform_name[0] == "Windows" :	
-			sizer3.Add(grid3, 0, wx.BOTTOM | wx.LEFT, 9)
-		else :
-			sizer3.Add(grid3, 0, wx.BOTTOM, 9)
-
-
-		grid31 = wx.FlexGridSizer(2, 4)
-		grid31.Add(wx.StaticText(panel3, -1, ""), 0, wx.RIGHT, 3)
-		self.cmd = wx.Choice(panel3, -1, (0,0), (50,-1), ("<", ">"))
-		self.cmd.SetForegroundColour(wx.BLACK)
-
-		grid31.Add(self.cmd, 0, wx.RIGHT, 9)
-		self.valueA = wx.TextCtrl(panel3, -1, "9999.99", size=(80, 25), style=wx.SUNKEN_BORDER )
-		grid31.Add(self.valueA, 0, wx.RIGHT, 9)
-
-		self.onlyCheck = wx.CheckBox(panel3, -1, ' ')
-		self.onlyCheck.SetValue(True)
-		self.onlyCheck.Enable(False)
-		grid31.Add(self.onlyCheck, 0, wx.BOTTOM, 9)
-
-		grid31.Add(wx.StaticText(panel3, -1, "                     "), 0, wx.RIGHT, 3)
-		self.signcmd = wx.Choice(panel3, -1, (0,0), (50,-1), ("<", ">")) 
-		self.signcmd.SetForegroundColour(wx.BLACK)
-		grid31.Add(self.signcmd, 0, wx.RIGHT, 9)
-		self.valueB = wx.TextCtrl(panel3, -1, "-9999.99", size=(80, 25), style=wx.SUNKEN_BORDER )
-		grid31.Add(self.valueB, 0, wx.RIGHT, 9)
-		self.orCheck = wx.CheckBox(panel3, -1, ' ')
-		grid31.Add(self.orCheck, 0, wx.BOTTOM, 15)
-
-		wx.StaticText(panel3, -1, "data value", (20, 110))
-		if platform_name[0] == "Windows" :	
-			sizer3.Add(grid31, 0, wx.LEFT, 9)
-		else :		
-			sizer3.Add(grid31)
-
-		buttonsize = 180
-		if platform_name[0] == "Windows" :	
-			buttonsize = 140
-			
-		grid32 = wx.FlexGridSizer(1, 2)
-		self.optcmd = wx.Choice(panel3, -1, (0,0), (buttonsize, -1), ("Use all cores", "Use cores numbered <="))
-		grid32.Add(self.optcmd, 0, wx.RIGHT, 5)
-		self.valueE = wx.TextCtrl(panel3, -1, "999", size=(80, 25), style=wx.SUNKEN_BORDER )
-		grid32.Add(self.valueE, 0, wx.BOTTOM, 9)
-		if platform_name[0] == "Windows" :		
-			sizer3.Add(grid32, 0, wx.LEFT, 9)
-		else :
-			sizer3.Add(grid32)
-
-		panel3.SetSizer(sizer3)
-		vbox_top.Add(panel3, 0, wx.BOTTOM | wx.TOP | wx.LEFT , 9)
-
-		gridApply3 = wx.GridSizer(1, 2)
-		cullBtn = wx.Button(self.mainPanel, -1, "Apply", size=(120, 30))
-		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnCull, cullBtn)
-		gridApply3.Add(cullBtn)
-
-		self.cullBackup = [ "All Holes", False, "5.0", ">", "9999.99", True, "<", "-9999.99", False, "Use all cores", "999" ]
-		self.cullUndo = [ "All Holes", False, "5.0", ">", "9999.99", True, "<", "-9999.99", False, "Use all cores", "999" ]
-		self.cullundoBtn = wx.Button(self.mainPanel, -1, "Undo", size=(120, 30))
-		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnUNDOCull, self.cullundoBtn)
-		self.cullundoBtn.Enable(False)
-		if platform_name[0] == "Windows" :	
-			gridApply3.Add(self.cullundoBtn, 0, wx.LEFT, 20)	
-		else :			
-			gridApply3.Add(self.cullundoBtn, 0, wx.LEFT, 10)	
-		vbox_top.Add(gridApply3, 0, wx.LEFT, 10)
-
+		vbox_top.Add(cullPanel, 0, wx.TOP | wx.EXPAND, 5)
 		self.mainPanel.SetSizer(vbox_top)
 
-	def OnInitUI(self):
-		self.all.SetStringSelection("All Holes")
-		self.decimate.SetValue("1")
-		self.smoothcmd.SetStringSelection("Gaussian")
-		self.unitscmd.SetStringSelection("Points")
-		self.width.SetValue("9")
-		self.plotcmd.SetStringSelection("Smoothed&Unsmoothed")
-		self.nocull.SetValue(True)
-		self.valueD.SetValue("5.0")
-		self.cmd.SetStringSelection(">")
-		self.valueA.SetValue("9999.99")
-		self.onlyCheck.SetValue(True)
-		self.signcmd.SetStringSelection("<")
-		self.valueB.SetValue("-9999.99")
-		self.orCheck.SetValue(False)
-		self.optcmd.SetStringSelection("Use all cores")
-		self.valueE.SetValue("999")
-		self.deciBackup = [ "All Holes", "1"]
-		self.smBackup = []
-		self.cullBackup = [ "All Holes", False, "5.0", ">", "9999.99", True, "<", "-9999.99", False, "Use all cores", "999" ]
-		self.deciUndo = [ "All Holes", "1"]
-		self.smUndo = []
-		self.cullUndo = [ "All Holes", False, "5.0", ">", "9999.99", True, "<", "-9999.99", False, "Use all cores", "999" ]
-		self.smundoBtn.Enable(False)
-		self.cullundoBtn.Enable(False)
-		self.deciundoBtn.Enable(False)
-
-	def SetUNIT(self, event):
-	 	self.width.Clear()
-		if self.unitscmd.GetStringSelection() == "Depth(cm)" :
-			self.width.SetValue("40")
-		else :
-			self.width.SetValue("9")
+	# Disable all controls and re-init status text. Used when no data is loaded.
+	def DisableAllControls(self):
+		self.all.Enable(False)
+		self.all.Clear()
+		self.deciCreate.Enable(False)
+		self.deciDelete.Enable(False)
+		self.ClearDecimateStateText()
+		self.smCreate.Enable(False)
+		self.smDelete.Enable(False)
+		self.ClearSmoothStateText()
+		self.cullCreate.Enable(False)
+		self.cullDelete.Enable(False)
+		self.ClearCullStateText()
 
 	def OnLock(self):
 		self.locked = True 
@@ -3370,508 +3232,219 @@ class FilterPanel():
 	def OnRelease(self):
 		self.locked = False 
 
-	def OnUPDATEDECIMATE(self, selection, deciValue) :
-		n = self.all.GetCount()
-		for i in range(n) :
-			if self.all.GetString(i) == selection :
-				self.all.SetSelection(i)
-				self.decimate.SetValue(deciValue)
-				self.OnDecimate(1)
-				return
+	def ClearCullStateText(self):
+		self.cullState1.SetLabel("No cull applied.")
+		self.cullState2.SetLabel("")
+		self.cullState3.SetLabel("")
 
+	def OnClearCull(self, event):
+		datatype = self._curType()
+		self.ApplyCull(datatype) # clear cull
 
-# 	def OnRegisterClear(self):
-# 		if self.locked == False :
-# 			self.prevSelected = self.all.GetCurrentSelection();
-# 			if self.prevSelected == -1 :
-# 				self.prevSelected = 0			
-# 			self.all.Clear()
-# 			self.all.Append("All Holes")
-# 			self.all.SetSelection(0)
-# 			#self.all.Append("Log")
-			
-# 			if platform_name[0] == "Windows":
-# 				self.all.SetValue(self.all.GetString(self.prevSelected))			
-# 			self.parent.optPanel.OnRegisterClear()
-
-
-	def OnRegisterSplice(self):
-		n = self.all.GetCount()
-		for i in range(n) :
-			if self.all.GetString(i) == "Spliced Records" :
-				return False
-		name = "Spliced Records"
-		self.all.Append(name)
-		self.parent.optPanel.OnRegisterHole(name)
-		return True 
-
-	def OnRegisterHole(self, holename):
-		if self.locked == False :
-			n = self.all.GetCount()
-			for i in range(n) :
-				if self.all.GetString(i) == holename :
-					return
-
-			self.all.Append(holename)
-			self.parent.optPanel.OnRegisterHole(holename)
-
-	def ParseSmoothString(self, smoothStr):
-		tokens = smoothStr.split(' ')
-		if len(tokens) != 3:
-			return []
-		return tokens
-
-	def MakeSmoothString(self, width, units, smoothStyle):
-		return width + " " + units + " " + smoothStyle
-
-	def UpdateSmooth(self, smoothStr):
-		smoothList = self.ParseSmoothString(smoothStr)
-		if smoothList == []:
+	def OnCreateCull(self, event):
+		dlg = dialog.CullDialog(self.parent, self._curCull())
+		pos = self.cullCreate.GetScreenPositionTuple()
+		dlg.SetPosition(pos)
+		if dlg.ShowModal() != wx.ID_OK:
 			return
-		self.smoothcmd.SetStringSelection("Gaussian")
-		self.width.SetValue(smoothList[0])
-		self.unitscmd.SetStringSelection(smoothList[1])
-		self.plotcmd.SetStringSelection(smoothList[2])
+		self.ApplyCull(self._curType(), True, dlg.outCullTops, dlg.outCullValue1, dlg.outCullValue2, dlg.outSign1, dlg.outSign2, dlg.outJoin)
 
-	# brg 1/29/2014: new-fangled SetTYPE()
-	def TypeChoiceChanged(self, event):
-		typeStr = self.all.GetValue()
-		if typeStr == 'All Holes' or typeStr == 'Log' or typeStr == 'Spliced Records':
-			return
+	# bcull = 0 no cull, 1 apply cull
+	# cullValue: amount to trim from top
+	# cullNumber: -1 to use all cores, other to use cores numbered [number and less]: always set to -1
+	# cullStrength, always 167.0 for some reason
+	# value1 = > cull value, 9999.99 or -9999.99 indicates dummy, no actual culling
+	# value2 = < cull value
+	# sign1 = 1 for greater than, 2 for less than
+	# sign2 = same as sign1
+	# join = 1 if only sign1 + value1 is used, 2 if both are used
+	def ApplyCull(self, datatype, bcull=False, cullValue=0.0, value1=9999.99, value2=-9999.99, sign1=1, sign2=2, join=1):
+		cullStrength = 167.0 # always use this magic number
+		cullNumber = -1 # always show all cores
+		self.parent.dataFrame.UpdateCULL(datatype, bcull, cullValue, cullNumber, value1, value2, sign1, sign2, join)
+		py_correlator.cull(datatype, bcull, cullValue, cullNumber, cullStrength, value1, value2, sign1, sign2, join)
 
-# 		site = self.parent.GetLoadedSite()
-# 		strippedType = typeStr[4:] # strip off 'All '
-# 		if strippedType in site.holeSets:
-# 			holeSet = site.holeSets[strippedType]
-# 		else:
-# 			print "Couldn't find type " + strippedType + " in site.holeSets, bailing"
-# 			return
+		self.parent.LOCK = 0
+		self.parent.UpdateCORE()
+		self.parent.UpdateSMOOTH_CORE()
+		self.parent.LOCK = 1
 
-		self.decimate.SetValue(str(holeSet.decimate))
-		self.UpdateSmooth(holeSet.smooth)
+		if datatype == "Natural Gamma":
+			datatype = "NaturalGamma"
 
+		# Delete cull file if it's been cleared. We no longer have an enable/disable mechanism
+		# for cull tables. If a cull file exists, it's "enabled" and we always apply it.
+		deleteTable = not bcull
+		self.parent.dataFrame.OnUPDATE_CULLTABLE(datatype, deleteTable)
+		self.UpdateCullState(self._curCull())
+		self.parent.Window.UpdateDrawing()
 
-	def SetTYPE(self, event):
-		type = self.all.GetStringSelection()
-		if type == 'All Holes':
-			return
-		elif type == 'Log':
-			return
-		elif type == 'Spliced Records':
-			return
+	def UpdateCullState(self, cullData):
+		hasCull = cullData is not None and cullData[1] == True
+		if hasCull:
+			print("cullData = {}".format(cullData))
+			statuses = self.GetCullStatusStrings(cullData)
+			# fill cullStateX text with applied culling parameters, maximum 3.
+			for index, cullState in enumerate([self.cullState1, self.cullState2, self.cullState3]):
+				if index < len(statuses):
+					cullState.SetLabel(statuses[index])
+				else:
+					cullState.SetLabel("")
 		else:
-			size = len(type)
-			type = type[4:size] # strip off 'All '
+			self.ClearCullStateText()
+		self.cullCreate.Enable(True)
+		self.cullCreate.SetLabel("Edit" if hasCull else "Create")
+		self.cullDelete.Enable(hasCull)
 
-		# Update decivalue & smooth
-		if type == "Natural Gamma" :
-			type = "NaturalGamma"
-		data = self.parent.dataFrame.GetDECIMATE(type)
-		
-		if data != None :
-			self.decimate.SetValue(data[0])
-			if data[1] != "" :
-				smooth_array = data[1].split(' ')
-				self.smoothcmd.SetStringSelection("Gaussian")
-				self.width.SetValue(smooth_array[0])
-				self.unitscmd.SetStringSelection(smooth_array[1])
-				self.plotcmd.SetStringSelection(smooth_array[2])
-			else :
-				self.smoothcmd.SetStringSelection("None")
-		else :
-			self.smoothcmd.SetStringSelection("None")
-		self.smBackup = [ self.all.GetStringSelection(), self.smoothcmd.GetStringSelection(), self.width.GetValue(), self.unitscmd.GetStringSelection(), self.plotcmd.GetStringSelection()]
+	# Return true if the cull sign and value aren't the '9999.9' or '-9999.9' dummy values
+	# passed to py_correlator.cull() to indicate no cull depending on associated sign (<, >).
+	def _nonDummyValue(self, cullSign, cullValue):
+		return (cullSign == '>' and float(cullValue) < 9999.0) or (cullSign == '<' and float(cullValue) > -9999.0)
 
-		# Update cull
+	# Create cull status strings for display based on variable-length cullData list.
+	def GetCullStatusStrings(self, cullData):
+		strs = []
+		datalen = len(cullData)
+		if datalen >= 3:
+			strs.append("Culling {} cm from core tops".format(cullData[2]))
+		if datalen == 5 or datalen == 6:
+			if self._nonDummyValue(cullData[3], cullData[4]):
+				strs.append("Culling data values {} {}".format(cullData[3], cullData[4]))
+		elif datalen == 7 or datalen == 8:
+			if self._nonDummyValue(cullData[3], cullData[4]):
+				strs.append("Culling data values {} {}".format(cullData[3], cullData[4]))
+			if self._nonDummyValue(cullData[5], cullData[6]):
+				strs.append("Culling data values {} {}".format(cullData[5], cullData[6]))
+		return strs
+
+	# Update filter panels to reflect change in selected filter data type.
+	def SetTYPE(self, event):
+		self.all.Enable(True) # ensure dropdown is enabled
+		type = self._curType() # get self.all type, correcting for "Natural Gamma" spacing
+		data = self.parent.dataFrame.GetDECIMATE(type) # returns tuple of decimate, smooth data
+		self.UpdateDecimateState(data[0])
+		if data[1] != "":
+			smoothParams = SmoothParameters.createWithString(data[1])
+			self.UpdateSmoothState(smoothParams)
+		else:
+			self.UpdateSmoothState(None)
+
 		cullData = self.parent.dataFrame.GetCULL(type)
 		if cullData == None and type == "NaturalGamma":
 			type = "Natural Gamma"
 			cullData = self.parent.dataFrame.GetCULL(type)
+		self.UpdateCullState(cullData)
 
-		self.nocull.SetValue(True)
-		self.valueD.SetValue("5.0")
-		self.cmd.SetStringSelection(">")
-		self.valueA.SetValue("9999.99")
-		self.onlyCheck.SetValue(True)
-		self.signcmd.SetStringSelection("<")
-		self.valueB.SetValue("-9999.99")
-		self.orCheck.SetValue(False)
-		self.optcmd.SetStringSelection("Use all cores")
-		self.valueE.SetValue("999")
-
-		if cullData != None :
-			if cullData[1] == False :
-				self.nocull.SetValue(True)
-			else :
-				self.cull.SetValue(True)
-
-				max  = len(cullData)
-				if max >= 3 :
-					self.valueD.SetValue(cullData[2])
-				#self.cmd.SetStringSelection(">")
-
-				if max == 4 :
-					self.orCheck.SetValue(False)
-					self.optcmd.SetStringSelection("Use cores numbered <=")
-					self.valueE.SetValue(cullData[3])
-				elif max == 5 :
-					self.valueA.SetValue(cullData[4])
-					self.cmd.SetStringSelection(cullData[3])
-					self.orCheck.SetValue(False)
-					self.optcmd.SetStringSelection("Use all cores")
-				elif max == 6 :
-					self.valueA.SetValue(cullData[4])
-					self.cmd.SetStringSelection(cullData[3])
-					self.orCheck.SetValue(False)
-					self.optcmd.SetStringSelection("Use cores numbered <=")
-					self.valueE.SetValue(cullData[5])
-				elif max == 7 :
-					self.valueA.SetValue(cullData[4])
-					self.cmd.SetStringSelection(cullData[3])
-					self.orCheck.SetValue(True)
-					self.valueB.SetValue(cullData[6])
-					self.signcmd.SetStringSelection(cullData[5])
-					self.optcmd.SetStringSelection("Use all cores")
-				elif max == 8 :
-					self.valueA.SetValue(cullData[4])
-					self.cmd.SetStringSelection(cullData[3])
-					self.orCheck.SetValue(True)
-					self.valueB.SetValue(cullData[6])
-					self.signcmd.SetStringSelection(cullData[5])
-					self.optcmd.SetStringSelection("Use cores numbered <=")
-					self.valueE.SetValue(cullData[7])
-
-
-	# brg 1/29/2014: Ignore undo for now - seems pointless for decimate
-	def OnUNDODecimate(self, event):
-		opt = self.deciUndo[0]
-		deci = self.deciUndo[1]
-		self.deciUndo = [ self.all.GetStringSelection(), self.decimate.GetValue() ]
-
-		self.decimate.SetValue(deci)
-		self.all.SetStringSelection(opt)
-		self.OnDecimate(event)
-		
-
-	# brg 1/29/2014: Ignore undo for now - seems pointless for decimate
-	def OnDecimate(self, event):
-		type = self.all.GetStringSelection()
-		if type == 'Spliced Records' :
-			self.parent.OnShowMessage("Error", "Splice Records can not be decimated", 1)
-			return
-
-		self.deciUndo = self.deciBackup
-		self.deciundoBtn.Enable(True)
-
-		deciValue = int(self.decimate.GetValue())
-
-		site = self.parent.GetLoadedSite()
-		if type == "All Holes" :
-			for index in range(1, self.all.GetCount()):
-				allType = self.all.GetString(index)
-				if allType == 'Spliced Records' :
-					continue
-				py_correlator.decimate(allType, deciValue)
-				#site.SetDecimate(allType[4:], deciValue)
-		else :
-			py_correlator.decimate(type, deciValue)
-			#site.SetDecimate(type[4:], deciValue)
-
-		self.deciBackup = [ self.all.GetStringSelection(), self.decimate.GetValue() ]
-
-		if type != "Log" :
-			self.parent.LOCK = 0 
-			self.parent.UpdateCORE()
-			self.parent.UpdateSMOOTH_CORE()
-			self.parent.LOCK = 1 
-		else :
-			self.parent.UpdateLogData()
-
-		#if type == "All Natural Gamma" :
-		#	type = "All NaturalGamma"
-		#self.parent.dataFrame.OnUPDATEDECIMATE(type, deciValue)
-
-		#site.SyncToData()
+	# Apply decimate value to given datatype.
+	# datatype: data type string
+	# deciValue: integer decimate value
+	def ApplyDecimate(self, datatype, deciValue):
+		py_correlator.decimate(datatype, deciValue)
+		self.parent.LOCK = 0
+		self.parent.UpdateCORE()
+		self.parent.UpdateSMOOTH_CORE()
+		self.parent.LOCK = 1
+		self.parent.dataFrame.OnUPDATEDECIMATE(datatype, deciValue)
+		self.UpdateDecimateState(deciValue)
 		self.parent.Window.UpdateDrawing()
 
-	""" Return integer smooth style (unsmoothed, smoothed, or combo) based on current smooth combobox selection """
-	def GetSmoothStyle(self):
-		smoothStyle = 0 # no smooth - should really define constant, named values
-		if self.plotcmd.GetStringSelection() == "SmoothedOnly":
-			smoothStyle = 1
-		elif self.plotcmd.GetStringSelection() == "Smoothed&Unsmoothed":
-			smoothStyle = 2
-		return smoothStyle
-
-	""" Return integer width or -1 if "None" smooth type is selected """
-	def GetSmoothWidth(self):
-		smoothWidth = -1
-		if self.smoothcmd.GetStringSelection() == "Gaussian":
-			smoothWidth = int(self.width.GetValue())
-		return smoothWidth
-
-	""" Return current smooth unit """
-	def GetSmoothUnit(self):
-		smoothUnit = 2 if self.unitscmd.GetStringSelection() == "Depth(cm)" else 1
-		return smoothUnit
-
-	""" Return True if smooth is enabled ("Gaussian" type is selected) else False """
-	def GetSmoothEnable(self):
-		return False if self.smoothcmd.GetStringSelection() == "None" else True
-
-	def OnUNDOSmooth(self, event):
-		if self.smUndo == [] :
-			self.smundoBtn.Enable(False)
+	# Pop DecimateDialog to Create/Edit decimate filter.
+	def OnCreateDecimate(self, event):
+		datatype = self._curType()
+		curdec = self._curDecimate()
+		decdlg = dialog.DecimateDialog(self.parent, curdec)
+		pos = self.deciCreate.GetScreenPositionTuple()
+		decdlg.SetPosition(pos)
+		if decdlg.ShowModal() != wx.ID_OK:
 			return
+		deciValue = decdlg.deciValue
+		self.ApplyDecimate(datatype, deciValue)
 
-		opt = self.smUndo[0]
-		filter = self.smUndo[1]
-		value = self.smUndo[2]
-		unit = self.smUndo[3]
-		plotting = self.smUndo[4]
-		#self.smUndo = [ self.all.GetValue(), self.smoothcmd.GetValue(), self.width.GetValue(), self.plotcmd.GetValue()]
+	def ClearDecimateStateText(self):
+		self.deciState.SetLabel("None (show all points).")
 
-		self.all.SetStringSelection(opt)
-		self.smoothcmd.SetStringSelection(filter)
-		self.width.SetValue(value)
-		self.unitscmd.SetStringSelection(unit)
-		self.plotcmd.SetStringSelection(plotting)
-		self.OnSmooth(event)
-		self.smundoBtn.Enable(False)
+	# Reset decimate filter to 1.
+	def OnClearDecimate(self, evt):
+		self.ApplyDecimate(self._curType(), 1)
 
+	# Update GUI to reflect current type's decimate filter.
+	# deciStr: string representing decimate value for current type
+	def UpdateDecimateState(self, deciStr):
+		decimate = int(deciStr) > 1
+		if decimate:
+			self.deciState.SetLabel("Show every {} points".format(deciStr))
+		else:
+			self.ClearDecimateStateText()
+			self.deciCreate.SetLabel("Create")
+		self.deciCreate.Enable(True)
+		self.deciCreate.SetLabel("Edit" if decimate else "Create")
+		self.deciDelete.Enable(decimate)
 
-	def OnSmooth(self, event):
-		self.smundoBtn.Enable(True)
-		self.smUndo = self.smBackup
+	def _curType(self):
+		datatype = self.all.GetStringSelection()
+		if datatype == "Natural Gamma":
+			datatype = "NaturalGamma"
+		return datatype
 
-		smoothEnable = self.GetSmoothEnable()
-		smoothWidth = self.GetSmoothWidth()
-		smoothUnit = self.GetSmoothUnit()
-		smoothUnitStr = self.unitscmd.GetStringSelection()
-		smoothStyle = self.GetSmoothStyle()
-		smoothStyleStr = self.plotcmd.GetStringSelection()
+	def _curDecimate(self):
+		datatype = self._curType()
+		decimate, _ = self.parent.dataFrame.GetDECIMATE(datatype) # _ = smooth dummy
+		return decimate
 
-		site = self.parent.GetLoadedSite()
-		type = self.all.GetStringSelection()
+	def _curSmooth(self):
+		datatype = self._curType()
+		_, smooth = self.parent.dataFrame.GetDECIMATE(datatype) # _ = decimate dummy
+		if smooth != "":
+			return SmoothParameters.createWithString(smooth)
+		else:
+			return None
 
-		# 1/29/2014 brg: Looks like this takes effect when only smoothStyle has changed.
-		if self.smBackup != [] : 
-			if type == self.smBackup[0] and self.smoothcmd.GetStringSelection() == self.smBackup[1] and self.width.GetValue() == self.smBackup[2] and self.unitscmd.GetStringSelection() == self.smBackup[3] :
-				if type  != 'All Holes' and type != 'Log' and type != 'Spliced Records' :
-					size = len(type)
-					type = type[4:size]
-				if type == "Natural Gamma" :
-					type = "NaturalGamma"
+	def _curCull(self):
+		datatype = self._curType()
+		cullData = self.parent.dataFrame.GetCULL(datatype)
+		if cullData == None and datatype == "NaturalGamma":
+			datatype = "Natural Gamma"
+			cullData = self.parent.dataFrame.GetCULL(datatype)
+		return cullData
 
-				if type == 'Spliced Records' :
-					self.parent.Window.UpdateSMOOTH('splice', smoothStyle)
-				elif type == 'Log' :
-					self.parent.Window.UpdateSMOOTH('log', smoothStyle)
-				else :
-					self.parent.dataFrame.OnUPDATE_SMOOTH(type, self.smoothcmd.GetStringSelection(), str(self.width.GetValue()), self.unitscmd.GetStringSelection(), self.plotcmd.GetStringSelection() )
-					if type == 'All Holes' :
-						self.parent.Window.UpdateSMOOTH('splice', smoothStyle)
-						
-				self.parent.Window.UpdateDrawing()
-				#print "[DEBUG] Display is updated : " + self.plotcmd.GetValue()
-				return
+	def UpdateSmoothState(self, smoothData):
+		if smoothData is not None:
+			self.smoothState1.SetLabel("Width: {} {}".format(smoothData.getWidthString(), smoothData.getUnitsString()))
+			self.smoothState2.SetLabel("Display: {}".format(smoothData.getStyleString().replace('&', '&&')))
+		else:
+			self.ClearSmoothStateText()
+		self.smCreate.Enable(True)
+		self.smCreate.SetLabel("Create" if smoothData is None else "Edit")
+		self.smDelete.Enable(smoothData is not None)
 
-		if not smoothEnable:
-			smoothUnit = -1
+	def ClearSmoothStateText(self):
+		self.smoothState1.SetLabel("No smoothing applied.")
+		self.smoothState2.SetLabel("")
 
-		# brgtodo 1/29/2014: ??? If type is spliced records, why are we doing everything
-		# *but* modifying spliced records???
-#  		if type == 'Spliced Records' : 
-#  			max = self.all.GetCount()
-#  			start = 1
-#  			#if self.parent.Window.LogData == [] :
-#  			#	start = 2
-#  			for i in range(start, max) :
-#  				all_type = self.all.GetString(i)
-#  				if all_type == 'Spliced Records' :
-#  					continue
-#  				start = all_type.find("All", 0)
-#  				if start >= 0 : 
-#  					py_correlator.smooth(all_type, smoothWidth, smoothUnit)
+	def OnClearSmooth(self, event):
+		datatype = self._curType()
+		self.ApplySmooth(datatype, params=None)
 
-		# brgtodo 1/29/2014: Pretty sure this does exactly the same thing as above block
-		if type == 'All Holes' : 
-			for i in range(1, self.all.GetCount()) :
-				all_type = self.all.GetString(i)
-				if all_type == 'Spliced Records' :
-					continue
-				start = all_type.find("All", 0)
-				if start >= 0 or all_type == 'Log':
-					py_correlator.smooth(all_type, smoothWidth, smoothUnit)
-					#site.SetSmooth(all_type[4:], self.MakeSmoothString(str(smoothWidth), smoothUnitStr, smoothStyleStr))
-				#elif all_type == 'Log' :
-					#py_correlator.smooth(all_type, smoothWidth, smoothUnit)
-		else :
-			py_correlator.smooth(type, smoothWidth, smoothUnit)
-			#site.SetSmooth(type[4:], self.MakeSmoothString(str(smoothWidth), smoothUnitStr, smoothStyleStr))
+	def OnCreateSmooth(self, event):
+		curSmooth = self._curSmooth()
+		if curSmooth is None:
+			smdlg = dialog.SmoothDialog(self.parent)
+		else:
+			smdlg = dialog.SmoothDialog(self.parent, curSmooth.width, curSmooth.units, curSmooth.style)
+		pos = self.smCreate.GetScreenPositionTuple()
+		smdlg.SetPosition(pos)
+		if smdlg.ShowModal() == wx.ID_OK:
+			datatype = self._curType()
+			self.ApplySmooth(datatype, smdlg.outSmoothParams)
 
-		#site.SyncToData()
-
-		#HYEJUNG CHANGING NOW
-		if type == 'Spliced Records' :
-			self.parent.UpdateSMOOTH_SPLICE(False)
-			if self.parent.Window.LogData != [] and self.parent.Window.SpliceData != [] :
-				self.parent.UpdateSMOOTH_LOGSPLICE(True)
-			self.parent.Window.UpdateSMOOTH('splice', smoothStyle)
-		elif type == 'Log' :
-			#self.parent.UpdateLogData()
-			self.parent.UpdateSMOOTH_LogData()
-			self.parent.Window.UpdateSMOOTH('log', smoothStyle)
-		else :
-			self.parent.UpdateSMOOTH_CORE()
-			if type == 'All Holes' :
-				self.parent.UpdateSMOOTH_SPLICE(False)
-				self.parent.Window.UpdateSMOOTH('splice', smoothStyle)
-		###
-
-		self.smBackup = [ self.all.GetStringSelection(), self.smoothcmd.GetStringSelection(), self.width.GetValue(), self.unitscmd.GetStringSelection(), self.plotcmd.GetStringSelection()]
-
-		if type  != 'All Holes' and type != 'Log' and type != 'Spliced Records' :
-			size = len(type)
-			type = type[4:size]
-
-		if type == "Natural Gamma" :
-			type = "NaturalGamma"
-
-		self.parent.dataFrame.OnUPDATE_SMOOTH(type, self.smoothcmd.GetStringSelection(), str(self.width.GetValue()), self.unitscmd.GetStringSelection(), self.plotcmd.GetStringSelection())
-
-		self.parent.Window.UpdateDrawing()
-
-
-	def OnUNDOCull(self, event):
-		opt = self.cullUndo[0]
-		cull = self.cullUndo[1]
-		top = self.cullUndo[2]
-		sign1 = self.cullUndo[3]
-		value1 = self.cullUndo[4]
-		flag1 = self.cullUndo[5]
-		sign2 = self.cullUndo[6]
-		value2 = self.cullUndo[7]
-		flag2 = self.cullUndo[8]
-		type = self.cullUndo[9]
-		coreno = self.cullUndo[10]
-
-		# [ "All Holes", "False", "5.0", ">", "999.99", True, "<", "-999.99", False, "Use all cores", "999" ]
-		self.cullUndo = [ self.all.GetStringSelection(), self.nocull.GetValue(), self.valueD.GetValue(), self.cmd.GetStringSelection(), self.valueA.GetValue(), self.onlyCheck.GetValue(), self.signcmd.GetValue(), self.valueB.GetValue(), self.orCheck.GetValue(), self.optcmd.GetStringSelection(), self.valueE.GetValue()]
-
-		self.all.SetStringSelection(opt)
-		self.nocull.SetValue(cull)
-		self.cull.SetValue(True)
-		if cull == True : 
-			self.cull.SetValue(False)
-			self.nocull.SetValue(True)
-		self.valueD.SetValue(top)
-		self.cmd.SetStringSelection(sign1)
-		self.valueA.SetValue(value1)
-		self.onlyCheck.SetValue(flag1)
-		self.signcmd.SetStringSelection(sign2)
-		self.valueB.SetValue(value2)
-		self.orCheck.SetValue(flag2)
-		self.optcmd.SetStringSelection(type)
-		self.valueE.SetValue(coreno)
-
-		self.OnCull(event)
-
-
-	def OnCull(self, event):
-		type = self.all.GetStringSelection()
-		if type == 'Spliced Records' :
-			self.parent.OnShowMessage("Error", "Splice Records can not be culled", 1)
-			return
-
-		self.cullundoBtn.Enable(True)
-
-		self.cullUndo = self.cullBackup
-
-		cullValue = 0.0
-		if self.valueD.GetValue() != "" :
-			cullValue = float(self.valueD.GetValue())
-		else :
-			self.valueD.SetValue("0.0")
-
-		bcull = 0
-		if self.cull.GetValue() == True :
-			bcull = 1
-
-		value1 = 999.99 
-		value2 = -999.99 
-		if self.valueA.GetValue() != "" :
-			value1 = float(self.valueA.GetValue())
-		else :
-			self.valueA.SetValue("999.99")
-
-		if self.valueB.GetValue() != "" :
-			value2 = float(self.valueB.GetValue())
-		else :
-			self.valueB.SetValue("-999.99")
-
-		sign1 = 1
-		if self.cmd.GetStringSelection() == "<" :
-			sign1 = 2
-		sign2 = 1
-		if self.signcmd.GetStringSelection() == "<" :
-			sign2 = 2
-
-		join = 1
-		if self.orCheck.GetValue() == True :
-			join = 2
-
-		cullNumber = -1
-		if self.optcmd.GetStringSelection() != "Use all cores" :
-			if self.valueE.GetValue() != "" :
-				cullNumber = int(self.valueE.GetValue())
-			else :
-				self.valueE.SetValue("999")
-
-		#cullStrength = float(self.valueC.GetValue())
-		cullStrength = 167.0
-
-		# HYEJUNG
-		if type == 'All Holes' : 
-			max = self.all.GetCount()
-			start = 1
-			#if self.parent.Window.LogData == [] :
-			#	start = 2
-			for i in range(start, max) :
-				all_type = self.all.GetString(i)
-				if all_type == 'Spliced Records' : 
-					continue
-				start = all_type.find("All", 0)
-				if start >= 0 or all_type == 'Log' : 
-					self.parent.dataFrame.UpdateCULL(all_type, bcull, cullValue, cullNumber, value1, value2, sign1, sign2, join)
-
-					py_correlator.cull(all_type, bcull, cullValue, cullNumber, cullStrength, value1, value2, sign1, sign2, join)
-
-		else :
-			self.parent.dataFrame.UpdateCULL(type, bcull, cullValue, cullNumber, value1, value2, sign1, sign2, join)
-			py_correlator.cull(type, bcull, cullValue, cullNumber, cullStrength, value1, value2, sign1, sign2, join)
-
-		if type != "Log" :
-			self.parent.LOCK = 0 
-			self.parent.UpdateCORE()
-			self.parent.UpdateSMOOTH_CORE()
-			self.parent.LOCK = 1 
-		else :
-			self.parent.UpdateLogData()
-
-		self.cullBackup = [ self.all.GetStringSelection(), self.nocull.GetValue(), self.valueD.GetValue(), self.cmd.GetStringSelection(), self.valueA.GetValue(), self.onlyCheck.GetValue(), self.signcmd.GetStringSelection(), self.valueB.GetValue(), self.orCheck.GetValue(), self.optcmd.GetStringSelection(), self.valueE.GetValue()]
-
-
-		if type  != 'All Holes' and type != 'Log' and type != 'Spliced Records' :
-			size = len(type)
-			type = type[4:size]
-
-		if type == "Natural Gamma" :
-			type = "NaturalGamma"
-
-		if type != "Log" :
-			self.parent.dataFrame.OnUPDATE_CULLTABLE(type)
-
+	def ApplySmooth(self, datatype, params):
+		if params:
+			py_correlator.smooth(datatype, params.width, params.units)
+		else: # remove smoothing
+			py_correlator.smooth(datatype, -1, -1)
+		self.parent.UpdateSMOOTH_CORE()
+		self.parent.dataFrame.OnUPDATE_SMOOTH(datatype, params)
+		self.UpdateSmoothState(self._curSmooth())
 		self.parent.Window.UpdateDrawing()
 
 
@@ -3883,128 +3456,56 @@ class PreferencesPanel():
 		self.prevSelected = 0
 		self.depthmax = 20.0
 
-	def OnRegisterHole(self, holename):
-		self.all.Append(holename)
-		self.all.SetSelection(self.prevSelected)
-
-	def OnToolbarWindow(self, event):
-		if self.tool.IsChecked() == True : 
-			self.parent.topMenu.Show(True)
-			self.parent.mitool.Check(True)
-		else :
-			self.parent.topMenu.Show(False)
-			self.parent.mitool.Check(False)
-		
 	def OnActivateWindow(self, event):
-		if self.opt1.IsChecked() == True : 
+		if self.showSpliceWindow.IsChecked() == True : 
 			self.parent.OnActivateWindow(1)
 			self.parent.misecond.Check(True)
 		else :
 			self.parent.OnActivateWindow(0)
 			self.parent.misecond.Check(False)
 
-	def OnActivateScroll(self, event):
-		if self.opt2.IsChecked() == True : 
-			self.parent.SetSecondScroll(1)
-			self.parent.miscroll.Check(True)
-		else :
-			self.parent.SetSecondScroll(0)
-			self.parent.miscroll.Check(False)
+	# def OnActivateScroll(self, event):
+	# 	self.parent.SetIndependentScroll(self.indSpliceScroll.IsChecked())
 
 	def OnUndoMinMax(self, event):
 		pass
 
 	def OnUPDATEMinMax(self, selection, min, max):
-		n = self.all.GetCount()
+		n = self.variableChoice.GetCount()
 		for i in range(n) :
-			if self.all.GetString(i) == selection :
-				self.all.SetSelection(i)
-				self.min.SetValue(min)
-				self.max.SetValue(max)
+			if self.variableChoice.GetString(i) == selection :
+				self.variableChoice.SetSelection(i)
+				self.varMin.SetValue(min)
+				self.varMax.SetValue(max)
 				self.OnChangeMinMax(1)
 				return
 
-
-	def OnUPDATEWidth(self):
-		type = self.all.GetStringSelection()
-		idx = self.slider1.GetValue() - 10
-		holeWidth = 300 + (idx * 10)
-		self.parent.Window.holeWidth = holeWidth 
-		self.parent.Window.spliceHoleWidth = holeWidth
-		self.parent.Window.logHoleWidth = holeWidth 
-
-
 	def SetTYPE(self, event):
-		type = self.all.GetStringSelection()
+		datatype = self.variableChoice.GetStringSelection()
+		if datatype == "Natural Gamma":
+			datatype = "NaturalGamma"
+		ret = self.parent.Window.GetMINMAX(datatype)
+		if ret is not None:
+			self.varMin.SetValue(str(ret[0]))
+			self.varMax.SetValue(str(ret[1]))
 
-		if type  == 'All Holes' :
-			print "[DEBUG] SET All Holes"
-		elif type == 'Log' :
-			type = "log"
-		elif type == 'Spliced Records' :
-			type = "splice"
-		else :
-			size = len(type)
-			type = type[4:size]
-
-			if type == "Natural Gamma" :
-				type = "NaturalGamma"
-
-		ret = self.parent.Window.GetMINMAX(type)
-		if ret != None :
-			self.min.SetValue(str(ret[0]))
-			self.max.SetValue(str(ret[1]))
-
-	# convert self.all string ("All Susceptibility") to type string ("Susceptibility")
+	# convert self.variableChoice string ("All Susceptibility") to type string ("Susceptibility")
 	def _FixListTypeStr(self, type):
-		if type.find("All ") == 0:
-			type = type[4:]
-			if type == "Natural Gamma":
-				type = "NaturalGamma"
-		elif type == "Spliced Records":
-			type = "splice"
-		elif type == "Log":
-			type = "log"
+		if type == "Natural Gamma":
+			type = "NaturalGamma"
 		return type
-	
-	# get all hole types in self.all - no splice or log
-	def _GetHoleTypes(self):
-		result = []
-		for str in self.all.GetStrings():
-			print str
-			if str.find("All ") != -1 and str != "All Holes":
-				result.append(self._FixListTypeStr(str))
-		return result
-	
-	# return list of types to apply min/max range change to - builds
-	# list if All Holes is selected, otherwise selected non-Log/Splice type
-	def _GetApplyList(self, allowSpliceAndLog=False):
-		result = []
-		curType = self.all.GetStringSelection()
-		if curType == "All Holes":
-			result = self._GetHoleTypes()
-		elif (curType != "Log" and curType != "Spliced Records") or allowSpliceAndLog:
-			result.append(self._FixListTypeStr(curType))
-		return result
-	
+
 	def OnChangeMinMax(self, event):
-		type = self.all.GetStringSelection()
-		minRange = float(self.min.GetValue())
-		maxRange = float(self.max.GetValue())
-
-		if type == 'Log' :
-			self.parent.Window.UpdateRANGE("log", minRange, maxRange)
-		elif type == 'Spliced Records' :
-			self.parent.Window.UpdateRANGE("splice", minRange, maxRange)
-		else: # holes
-			for applyType in self._GetApplyList():
-				self.parent.dataFrame.UpdateMINMAX(applyType, minRange, maxRange)
-
+		datatype = self.variableChoice.GetStringSelection()
+		minRange = float(self.varMin.GetValue())
+		maxRange = float(self.varMax.GetValue())
+		applyType = self._FixListTypeStr(datatype)
+		self.parent.dataFrame.UpdateMINMAX(applyType, minRange, maxRange)
 		self.parent.Window.UpdateDrawing()
 
 	def OnChangeWidth(self, event):
-		idx = self.slider1.GetValue() - 10
-		holeWidth = 300 + (idx * 10)
+		idx = self.plotWidthSlider.GetValue() - 10
+		holeWidth = 200 + (idx * 10)
 
 		self.parent.Window.holeWidth = holeWidth
 		self.parent.Window.spliceHoleWidth = holeWidth
@@ -4017,13 +3518,8 @@ class PreferencesPanel():
 		self.parent.Window.rulerUnits = self.unitsPopup.GetStringSelection()
 		self.parent.Window.UpdateDrawing()
 
-	# 9/12/2012 brgtodo: rename slider2 to something meaningful,
-	# update tie edit fields when slider moves  
 	def OnRulerOneScale(self, event):
-		# 1 --> 400 
-		# start -> 62 : 60 + (idx * 2) 
-		#idx = self.slider2.GetValue() - 10
-		idx = self.slider2.GetValue()
+		idx = self.depthZoomSlider.GetValue()
 
 		#self.parent.Window.length = 60 + (idx * 2)
 		min = self.parent.Window.rulerStartDepth
@@ -4036,27 +3532,26 @@ class PreferencesPanel():
 			return
 		self.parent.Window.UpdateDrawing()
 
-
 	def OnTieShiftScale(self, event):
 		self.parent.Window.shift_range = float(self.tie_shift.GetValue())
 
 	def OnChangeColor(self, event):
 		dlg = dialog.ColorTableDialog(self.parent)
 		dlg.Centre()
-		ret = dlg.ShowModal()
+		dlg.ShowModal()
 		dlg.Destroy()
 
 	def OnShowLine(self, event):
-		self.parent.Window.showHoleGrid = self.opt3.GetValue()
+		self.parent.Window.showHoleGrid = self.showPlotLines.GetValue()
 		self.parent.Window.UpdateDrawing()
 
 	def OnDepthViewAdjust(self, event):
-		min = float(self.min_depth.GetValue())
-		max = float(self.max_depth.GetValue())
+		min = float(self.depthRangeMin.GetValue())
+		max = float(self.depthRangeMax.GetValue())
 		if min >= max :
 			return
 		self.depthmax = max
-		self.slider2.SetValue(1)
+		self.depthZoomSlider.SetValue(1)
 		
 		updateScroll = event is not None
 		self.parent.OnUpdateDepthRange(min, max, updateScroll)
@@ -4072,164 +3567,161 @@ class PreferencesPanel():
 	def OnShowAffineTieArrows(self, event):
 		self.parent.Window.showAffineTieArrows = self.showAffineTieArrows.IsChecked()
 		self.parent.Window.UpdateDrawing()
-		
-	def OnShowLogShiftArrows(self, event):
-		self.parent.Window.LogClue = self.showLogShiftArrows.IsChecked()
+
+	def OnShowCoreInfo(self, event):
+		self.parent.Window.showCoreInfo = self.showCoreInfo.IsChecked()
 		self.parent.Window.UpdateDrawing()
+
+	def OnShowOutOfRangeData(self, event):
+		self.parent.Window.showOutOfRangeData = self.showOutOfRangeData.IsChecked()
+		self.parent.Window.UpdateDrawing()
+		
+	# def OnShowLogShiftArrows(self, event):
+	# 	self.parent.Window.LogClue = self.showLogShiftArrows.IsChecked()
+	# 	self.parent.Window.UpdateDrawing()
 	
 	def addItemsInFrame(self):
 		vbox_top = wx.BoxSizer(wx.VERTICAL)
 	
-		unitsPanel = wx.Panel(self.mainPanel, -1)
-		unitsSizer = wx.FlexGridSizer(1, 2)
+		# General view settings
+		viewPanel = wx.Panel(self.mainPanel, -1)
+		viewSizer = wx.StaticBoxSizer(wx.StaticBox(viewPanel, -1, "General view settings"), orient=wx.VERTICAL)
+
+		self.showSpliceWindow = wx.CheckBox(viewPanel, -1, 'Show Splice window partition')
+		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnActivateWindow, self.showSpliceWindow)
+		# self.indSpliceScroll = wx.CheckBox(viewPanel, -1, 'Independent Splice scrollbar')
+		# self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnActivateScroll, self.indSpliceScroll)
+		# self.indSpliceScroll.SetValue(False)
+		self.showPlotLines = wx.CheckBox(viewPanel, -1, 'Show lines between plot tracks')
+		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowLine, self.showPlotLines)
+		self.showPlotLines.SetValue(True)
+		self.showSectionDepths = wx.CheckBox(viewPanel, -1, "Show section boundaries and numbers")
+		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowSectionDepths, self.showSectionDepths)
+		self.showAffineShiftInfo = wx.CheckBox(viewPanel, -1, "Show core shift direction and distance")
+		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowAffineShiftInfo, self.showAffineShiftInfo)
+		self.showAffineTieArrows = wx.CheckBox(viewPanel, -1, "Show core tie arrows")
+		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowAffineTieArrows, self.showAffineTieArrows)
+		self.showCoreInfo = wx.CheckBox(viewPanel, -1, "Show core info on mouseover")
+		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowCoreInfo, self.showCoreInfo)
+		self.showOutOfRangeData = wx.CheckBox(viewPanel, -1, "Show data ranging beyond hole width")
+		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowOutOfRangeData, self.showOutOfRangeData)
+		# self.showLogShiftArrows = wx.CheckBox(viewPanel, -1, "Show log shift arrows")
+		# self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowLogShiftArrows, self.showLogShiftArrows)
+
+		viewSizer.Add(self.showSpliceWindow, 0, wx.BOTTOM, 5)
+		# viewSizer.Add(self.indSpliceScroll, 0, wx.LEFT, 20)
+		viewSizer.Add(self.showSectionDepths, 0, wx.BOTTOM, 5)
+		viewSizer.Add(self.showAffineShiftInfo, 0, wx.BOTTOM, 5)
+		viewSizer.Add(self.showAffineTieArrows, 0, wx.BOTTOM, 5)
+		viewSizer.Add(self.showCoreInfo, 0, wx.BOTTOM, 5)
+		# viewSizer.Add(self.showLogShiftArrows, 0, wx.BOTTOM, 5)
+		viewSizer.Add(self.showOutOfRangeData, 0, wx.BOTTOM, 5)
+		viewSizer.Add(self.showPlotLines, 0, wx.BOTTOM, 5)
+		viewPanel.SetSizer(viewSizer)
+		vbox_top.Add(viewPanel, 0, wx.BOTTOM | wx.EXPAND, 10)
+
+		# Depth Scale
+		depthScalePanel = wx.Panel(self.mainPanel, -1)
+		depthScaleSizer = wx.StaticBoxSizer(wx.StaticBox(depthScalePanel, -1, 'Depth Scale'), orient=wx.VERTICAL)
+
+		unitsPanel = wx.Panel(depthScalePanel, -1)
+		unitsSizer = wx.BoxSizer(wx.HORIZONTAL)
 		self.unitsPopup = wx.Choice(unitsPanel, -1, choices=('m','cm','mm'), size=(-1,24))
 		self.unitsPopup.SetSelection(0)
 		self.mainPanel.Bind(wx.EVT_CHOICE, self.OnChangeRulerUnits, self.unitsPopup)
-		unitsSizer.Add(wx.StaticText(unitsPanel, -1, "Depth units: "), flag=wx.ALIGN_CENTER_VERTICAL)
-		unitsSizer.Add(self.unitsPopup, flag=wx.ALIGN_CENTER_VERTICAL)
+		unitsSizer.Add(wx.StaticText(unitsPanel, -1, "Units"), flag=wx.ALIGN_CENTER_VERTICAL)
+		unitsSizer.Add(self.unitsPopup, 0, wx.LEFT | wx.ALIGN_CENTER_VERTICAL, 10)
+		unitsSizer.Add(wx.StaticText(unitsPanel, -1, "m, cm, mm"), 0, wx.LEFT | wx.ALIGN_CENTER_VERTICAL, 5)
 		unitsPanel.SetSizer(unitsSizer)
-		vbox_top.Add(unitsPanel, 0, wx.LEFT | wx.BOTTOM | wx.TOP, 9)
+		depthScaleSizer.Add(unitsPanel, 0, wx.BOTTOM, 10)
 
-		grid1 = wx.FlexGridSizer(1, 2)
-		self.opt1 = wx.CheckBox(self.mainPanel, -1, 'Splice/Log window', (10, 10))
-		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnActivateWindow, self.opt1)
-		grid1.Add(self.opt1)
+		depthRangePanel = wx.Panel(depthScalePanel, -1)
+		depthRangeSizer = wx.BoxSizer(wx.HORIZONTAL)
+		depthRangeSizer.Add(wx.StaticText(depthRangePanel, -1, "Interval"), 0, wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, 15)
+		depthRangeSizer.Add(wx.StaticText(depthRangePanel, -1, 'min'), 0, wx.ALIGN_CENTER_VERTICAL)
+		self.depthRangeMin = wx.TextCtrl(depthRangePanel, -1, "11.0", size=(65,-1))
+		depthRangeSizer.Add(self.depthRangeMin, 0, wx.LEFT, 5)
+		depthRangeSizer.Add(wx.StaticText(depthRangePanel, -1, 'max'), 0, wx.LEFT | wx.ALIGN_CENTER_VERTICAL, 5)
+		self.depthRangeMax = wx.TextCtrl(depthRangePanel, -1, "25.0", size=(65, -1))
+		depthRangeSizer.Add(self.depthRangeMax, 0, wx.LEFT, 5)
 
-		self.tool = wx.CheckBox(self.mainPanel, -1, 'Toolbar window', (10, 10))
-		self.tool.SetValue(True)
-		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnToolbarWindow, self.tool)
-		grid1.Add(self.tool, 0, wx.LEFT, 5)
-		vbox_top.Add(grid1, 0, wx.LEFT, 9)
+		depthRangePanel.SetSizer(depthRangeSizer)
+		depthScaleSizer.Add(depthRangePanel, 0, wx.BOTTOM, 5)
 
-		buttonsize = 300
-		if platform_name[0] == "Windows" :
-			buttonsize = 285
-			
-		vbox_top.Add(wx.StaticLine(self.mainPanel, -1, size=(buttonsize,1)), 0, wx.TOP | wx.LEFT, 9)
+		depthScaleApply = wx.Button(depthScalePanel, -1, "Apply Interval")
+		depthScaleSizer.Add(depthScaleApply, 0, wx.ALIGN_CENTER | wx.BOTTOM, 10)
+		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnDepthViewAdjust, depthScaleApply)
 
-		grid2 = wx.FlexGridSizer(1, 2)
-		self.opt2 = wx.CheckBox(self.mainPanel, -1, 'Second scroll', (10, 10))
-		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnActivateScroll, self.opt2)
-		grid2.Add(self.opt2)
-		self.opt2.SetValue(False)
+		depthSliderPanel = wx.Panel(depthScalePanel, -1)
+		depthSliderSizer = wx.BoxSizer(wx.HORIZONTAL)
+		self.depthZoomSlider = wx.Slider(depthSliderPanel, -1, 1, 1, 10)
+		self.mainPanel.Bind(wx.EVT_COMMAND_SCROLL, self.OnRulerOneScale, self.depthZoomSlider)
+		depthSliderSizer.Add(wx.StaticText(depthSliderPanel, -1, "Zoom"))
+		depthSliderSizer.Add(self.depthZoomSlider, 1, wx.EXPAND | wx.LEFT, 15)
+		depthSliderPanel.SetSizer(depthSliderSizer)
+		depthScaleSizer.Add(depthSliderPanel, 0, wx.EXPAND)
 
-		self.opt3 = wx.CheckBox(self.mainPanel, -1, 'Show Line', (10, 10))
-		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowLine, self.opt3)
-		self.opt3.SetValue(True)
-		if platform_name[0] == "Windows" :
-			grid2.Add(self.opt3, 0, wx.LEFT, 35)
-		else :		
-			grid2.Add(self.opt3, 0, wx.LEFT, 15)
+		depthScalePanel.SetSizer(depthScaleSizer)
+		vbox_top.Add(depthScalePanel, 0, wx.BOTTOM | wx.EXPAND, 10)
 
-		#self.opt3 = wx.CheckBox(self.mainPanel, -1, 'Text on Tie', (10, 10))
-		#self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnActivateText, self.opt3)
-		#self.opt3.SetValue(True)
-		#if platform_name[0] == "Windows" :
-		#	grid2.Add(self.opt3, 0, wx.LEFT, 35)
-		#else :		
-		#	grid2.Add(self.opt3, 0, wx.LEFT, 15)
+		# Keyboard up/down arrow shift distance
+		kbShiftPanel = wx.Panel(self.mainPanel, -1)
+		kbShiftSizer = wx.StaticBoxSizer(wx.StaticBox(kbShiftPanel, -1, 'Keyboard Shift'), orient=wx.VERTICAL)
+		kbsSizer = wx.BoxSizer(wx.HORIZONTAL)
+		self.tie_shift = wx.TextCtrl(kbShiftPanel, -1, "0.0", size=(50,-1))
+		kbsSizer.Add(self.tie_shift)
+		kbsSizer.Add(wx.StaticText(kbShiftPanel, -1, "m per up/down key"), 0, wx.ALIGN_CENTER_VERTICAL)
 
-		vbox_top.Add(grid2, 0, wx.TOP | wx.LEFT, 9)
-		vbox_top.Add(wx.StaticLine(self.mainPanel, -1, size=(buttonsize,1)), 0, wx.TOP | wx.LEFT, 9)
+		kbsApply = wx.Button(kbShiftPanel, -1, "Apply")
+		kbsSizer.Add(kbsApply, 0, wx.LEFT, 12)
+		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnTieShiftScale, kbsApply)
+		kbShiftSizer.Add(kbsSizer)
+		kbShiftPanel.SetSizer(kbShiftSizer)
+		vbox_top.Add(kbShiftPanel, 0, wx.BOTTOM | wx.EXPAND, 10)
 
-		self.showSectionDepths = wx.CheckBox(self.mainPanel, -1, "Show sections' depths and numbers")
-		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowSectionDepths, self.showSectionDepths)
-		vbox_top.Add(self.showSectionDepths, 0, wx.ALL, 5)
+		# Variable Scale
+		varScalePanel = wx.Panel(self.mainPanel, -1)
+		varScaleSizer = wx.StaticBoxSizer(wx.StaticBox(varScalePanel, -1, 'Display Range'), orient=wx.VERTICAL)
 
-		self.showAffineShiftInfo = wx.CheckBox(self.mainPanel, -1, "Show affine shift direction and distance")
-		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowAffineShiftInfo, self.showAffineShiftInfo)
-		vbox_top.Add(self.showAffineShiftInfo, 0, wx.ALL, 5)
-		
-		self.showAffineTieArrows = wx.CheckBox(self.mainPanel, -1, "Show affine tie arrows")
-		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowAffineTieArrows, self.showAffineTieArrows)
-		vbox_top.Add(self.showAffineTieArrows, 0, wx.ALL, 5)		
+		self.variableChoice = wx.Choice(varScalePanel, -1, (0,0), (270,-1), (""))
+		varScalePanel.Bind(wx.EVT_CHOICE, self.SetTYPE, self.variableChoice)
 
-		self.showLogShiftArrows = wx.CheckBox(self.mainPanel, -1, "Show log shift arrows")
-		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowLogShiftArrows, self.showLogShiftArrows)
-		vbox_top.Add(self.showLogShiftArrows, 0, wx.ALL, 5)
+		varSizer = wx.BoxSizer(wx.HORIZONTAL)
+		varSizer.Add(wx.StaticText(varScalePanel, -1, "Data Type"))
+		varSizer.Add(self.variableChoice, 1, wx.LEFT | wx.EXPAND, 5)
+		varScaleSizer.Add(varSizer,  0, wx.BOTTOM, 10)
 
-		panel1 = wx.Panel(self.mainPanel, -1)
-		sizer1 = wx.StaticBoxSizer(wx.StaticBox(panel1, -1, 'Display Range'), orient=wx.VERTICAL)
+		varRangeSizer = wx.BoxSizer(wx.HORIZONTAL)
+		varRangeSizer.Add(wx.StaticText(varScalePanel, -1, "Range"), 0, wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, 15)
 
-		self.all = wx.Choice(panel1, -1, (0,0), (270,-1), (""))
-		panel1.Bind(wx.EVT_CHOICE, self.SetTYPE, self.all)
+		varRangeSizer.Add(wx.StaticText(varScalePanel, -1, "min"), 0, wx.ALIGN_CENTER_VERTICAL)
+		self.varMin = wx.TextCtrl(varScalePanel, -1, "0", size=(65,-1))
+		varRangeSizer.Add(self.varMin, 0, wx.LEFT, 5)
+		varRangeSizer.Add(wx.StaticText(varScalePanel, -1, "max"), 0, wx.LEFT | wx.ALIGN_CENTER_VERTICAL, 5)
+		self.varMax = wx.TextCtrl(varScalePanel, -1, "20", size=(65,-1))
+		varRangeSizer.Add(self.varMax, 0, wx.LEFT, 5)
 
-		self.all.SetForegroundColour(wx.BLACK)
-		sizer1.Add(self.all, 0, wx.TOP, 5)
+		varScaleSizer.Add(varRangeSizer, 0, wx.BOTTOM, 5)
+		varApply = wx.Button(varScalePanel, -1, "Apply Range")
+		varScaleSizer.Add(varApply, 0, wx.ALIGN_CENTER | wx.BOTTOM, 10)
+		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnChangeMinMax, varApply)
 
-		grid1range = wx.FlexGridSizer(4, 2)
-		grid1range.Add(wx.StaticText(panel1, -1, "Variable minimum: "), 0, wx.TOP, 5)
-		self.min = wx.TextCtrl(panel1, -1, "0", size=(80, 25), style=wx.SUNKEN_BORDER)
-		grid1range.Add(self.min, 0, wx.LEFT | wx.TOP, 5)
+		self.plotWidthSlider = wx.Slider(varScalePanel, -1, value=10, minValue=1, maxValue=20)
+		self.mainPanel.Bind(wx.EVT_COMMAND_SCROLL, self.OnChangeWidth, self.plotWidthSlider)
+		varSliderSizer = wx.BoxSizer(wx.HORIZONTAL)
+		varSliderSizer.Add(wx.StaticText(varScalePanel, -1, "Zoom"))
+		varSliderSizer.Add(self.plotWidthSlider, 1, wx.EXPAND)
+		varSliderSizer.Add(wx.StaticText(varScalePanel, -1, "Width*2"))
 
-		grid1range.Add(wx.StaticText(panel1, -1, "Variable maximum: "), 0, wx.TOP, 5)
-		self.max = wx.TextCtrl(panel1, -1, "20", size=(80, 25), style=wx.SUNKEN_BORDER)
-		grid1range.Add(self.max, 0, wx.LEFT | wx.TOP, 5)
-		widthBtn = wx.Button(panel1, -1, "Apply", size=(110, 30))
-		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnChangeMinMax, widthBtn)
-		grid1range.Add(widthBtn, 0, wx.TOP, 9)
-		widthundoBtn = wx.Button(panel1, -1, "Undo", size=(110, 30))
-		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnUndoMinMax, widthundoBtn)
-		grid1range.Add(widthundoBtn, 0, wx.TOP | wx.LEFT, 9)
-		widthundoBtn.Enable(False)
+		varScaleSizer.Add(varSliderSizer, 0, wx.EXPAND)
 
-		if platform_name[0] == "Windows" :
-			grid1range.Add(wx.StaticText(panel1, -1, "Axis width: "), 0, wx.TOP, 10)
-			grid1range.Add(wx.StaticText(panel1, -1, ""), 0, wx.BOTTOM, 25)
+		varScalePanel.SetSizer(varScaleSizer)
+		vbox_top.Add(varScalePanel, 0, wx.BOTTOM | wx.EXPAND, 10)
 
-			self.slider1 = wx.Slider(panel1, -1, 10, 1, 20, (90, 165), (150, -1))
-			self.mainPanel.Bind(wx.EVT_COMMAND_SCROLL, self.OnChangeWidth, self.slider1)
-			sizer1.Add(grid1range, 0, wx.LEFT | wx.TOP, 5)
-		else :
-			grid1range.Add(wx.StaticText(panel1, -1, "Axis width: "), 0, wx.TOP, 8)
-			grid1range.Add(wx.StaticText(panel1, -1, ""), 0, wx.TOP, 10)
-
-			self.slider1 = wx.Slider(panel1, -1, 10, 1, 20, (100, 165), (150, -1))
-			self.mainPanel.Bind(wx.EVT_COMMAND_SCROLL, self.OnChangeWidth, self.slider1)
-			sizer1.Add(grid1range, 0, wx.LEFT | wx.TOP, 5)
-
-		panel1.SetSizer(sizer1)
-		vbox_top.Add(panel1, 0, wx.TOP | wx.LEFT | wx.BOTTOM, 9)
-		
-		panel2 = wx.Panel(self.mainPanel, -1)
-		sizer2 = wx.StaticBoxSizer(wx.StaticBox(panel2, -1, 'Ruler Depth Scale'), orient=wx.VERTICAL)
-		self.slider2 = wx.Slider(panel2, -1, 1, 1, 10, size=(270, -1))
-		self.mainPanel.Bind(wx.EVT_COMMAND_SCROLL, self.OnRulerOneScale, self.slider2)
-		sizer2.Add(self.slider2, 0, flag=wx.EXPAND)
-		grid21 = wx.FlexGridSizer(1, 5)
-		grid21.Add(wx.StaticText(panel2, -1, 'min:'))
-		self.min_depth = wx.TextCtrl(panel2, -1, "0.0", size =(50, 25), style=wx.SUNKEN_BORDER | wx.TE_PROCESS_ENTER)
-		grid21.Add(self.min_depth, 0, wx.LEFT, 5)
-		grid21.Add(wx.StaticText(panel2, -1, 'max:'), 0, wx.LEFT, 5)
-		self.max_depth = wx.TextCtrl(panel2, -1, "20.0", size =(50, 25), style=wx.SUNKEN_BORDER | wx.TE_PROCESS_ENTER)
-		grid21.Add(self.max_depth, 0, wx.LEFT, 5)
-		sizer2.Add(grid21)
-		testbtn = wx.Button(panel2, -1, "Apply", size=(60,25))
-		grid21.Add(testbtn, 0, wx.LEFT, 10)
-		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnDepthViewAdjust, testbtn)
-
-		panel2.SetSizer(sizer2)
-		#vbox_top.Add(panel2, 0, wx.TOP | wx.LEFT, 9)
-		vbox_top.Add(panel2, 0, wx.LEFT, 9)
-		
-		panel6 = wx.Panel(self.mainPanel, -1)
-		sizer6 = wx.StaticBoxSizer(wx.StaticBox(panel6, -1, 'Keyboard Tie Shift Depth Scale'), orient=wx.VERTICAL)
-		grid61 = wx.FlexGridSizer(1, 3)
-		grid61.Add(wx.StaticText(panel6, -1, 'In meters'), 0, wx.RIGHT, 9)
-		self.tie_shift = wx.TextCtrl(panel6, -1, "0.0", size =(100, 25), style=wx.SUNKEN_BORDER | wx.TE_PROCESS_ENTER)
-		grid61.Add(self.tie_shift)
-
-		testbtn = wx.Button(panel6, -1, "Apply", size=(60,25))
-		grid61.Add(testbtn, 0, wx.LEFT, 12)
-		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnTieShiftScale, testbtn)
-		sizer6.Add(grid61)
-		panel6.SetSizer(sizer6)
-		vbox_top.Add(panel6, 0, wx.LEFT | wx.TOP, 9)
-
-
-		testbtn = wx.Button(self.mainPanel, -1, "Change Color Set", size=(290,25))
-		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnChangeColor, testbtn)
-		vbox_top.Add(testbtn, 0, wx.LEFT | wx.TOP, 9)
+		# Color Set
+		colorButton = wx.Button(self.mainPanel, -1, "Change Color Set", size=(290,25))
+		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnChangeColor, colorButton)
+		vbox_top.Add(colorButton, 0)
 
 		self.mainPanel.SetSizer(vbox_top)
 

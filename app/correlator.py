@@ -2,10 +2,12 @@
 
 import copy
 
-import site # brg 12/4/2013 unused
 import platform
 import os
 import socket
+import sys
+import traceback
+
 platform_name = platform.uname()
 if platform_name[5] == "i386":
 	os.system('sh swap_intel_library')
@@ -33,20 +35,19 @@ import dialog
 import frames
 import dbmanager
 import version as vers
-import model
-from affine import AffineBuilder, AffineCoreInfo, aci, isTie, isSet, isImplicit
+from affine import AffineBuilder, AffineCoreInfo, aci, acistr, isTie, isSet, isImplicit
 import splice
 import tabularImport
+import prefs
 
-app = None 
+app = None
+Prefs = None
 User_Dir = os.path.expanduser("~")
 
 myPath = User_Dir  + "/Documents/Correlator/" + vers.BaseVersion + "/"
-if platform_name[0] == "Windows" :
+if platform_name[0] == "Windows":
 	myPath =  User_Dir  + "\\Correlator\\" + vers.BaseVersion + "\\"
 myTempPath = myPath
-WIN_WIDTH = 800
-WIN_HEIGHT = 600
 
 global_logName = "" 
 global_logFile = None 
@@ -140,17 +141,10 @@ class MainFrame(wx.Frame):
 		self.Directory = ""
 		self.DBPath = "-"
 		self.client = None
-		self.loadedSite = None
 
-		wx.EVT_CLOSE(self, self.OnHide)
+		self.Window.affineBroadcaster.addListener(self.compositePanel.TiePointCountChanged)
+
 		wx.EVT_IDLE(self, self.OnIDLE)
-
-	def SetLoadedSite(self, siteData):
-		if isinstance(siteData, model.SiteData):
-			self.loadedSite = siteData
-
-	def GetLoadedSite(self):
-		return self.loadedSite
 
 	def INIT_CHANGES(self):
 		self.AffineChange = False 
@@ -160,53 +154,52 @@ class MainFrame(wx.Frame):
 		self.TimeChange = False 
 
 	def OnIDLE(self, event):
-		if app == None :
+		if app == None:
 			return
 
-		if app.IsActive() == True :
-			if self.FOCUS == 0 : 
-				if self.mitool.IsChecked() == True :
+		if app.IsActive() == True:
+			if self.FOCUS == 0: 
+				if self.mitool.IsChecked() == True:
 					self.topMenu.Show(True)
 					self.topMenu.Iconize(False)
 				self.FOCUS = 1
 
 			if self.IsIconized():
-				if self.IDLE == 0 :
+				if self.IDLE == 0:
 					self.topMenu.Show(False)
-					if platform_name[0] == "Windows" :	
+					if platform_name[0] == "Windows":	
 						self.topMenu.Iconize(True)
 					self.IDLE = 1
-			else :
-				if self.IDLE == 1 :
+			else:
+				if self.IDLE == 1:
 					if self.mitool.IsChecked():
 						self.topMenu.Show(True)
-					if platform_name[0] == "Windows" :	
+					if platform_name[0] == "Windows":	
 						self.topMenu.Iconize(False)
 					self.IDLE = 0 
-		else :
+		else:
 			self.topMenu.Show(False)
-			if platform_name[0] == "Windows" :	
+			if platform_name[0] == "Windows":	
 				self.topMenu.Iconize(True)
 			self.FOCUS = 0 
 
 	def CheckAutoELD(self):
-		if (self.autoPanel.selectedNo != -1) and (self.autoPanel.ApplyFlag == 0) :
+		if (self.autoPanel.selectedNo != -1) and (self.autoPanel.ApplyFlag == 0):
 			return False
 		return True
-
 
 	def UpdateSize(self, width, height):
 		self.Width = width 
 		self.Height = height 
-		WIN_WIDTH = width
-		WIN_HEIGHT = height
 
-
-	def DoesFineTune(self) :
-		if self.Window.SpliceData != [] :
-			if self.AffineChange == True :
+	def DoesFineTune(self):
+		if self.Window.SpliceData != []:
+			if self.AffineChange == True:
 				return  True
 		return False
+
+	def GetPref(self, prefkey, default=""):
+		return Prefs.get(prefkey, default)
 
 	def CreateMenu(self):
 		self.statusBar.SetStatusText('Done')
@@ -215,89 +208,89 @@ class MainFrame(wx.Frame):
 		menuFile = wx.Menu()
 		menuBar = wx.MenuBar()
 
-		miFileNew = menuFile.Append(-1, "&New\tCtrl-N", "New data")
-		self.Bind(wx.EVT_MENU, self.OnNewData, miFileNew)
-
-		menuFile.AppendSeparator()
+		prefsItem = menuFile.Append(wx.ID_PREFERENCES, "&Preferences...\tCTRL+,", "Edit application preferences")
+		self.Bind(wx.EVT_MENU, self.OnPreferences, prefsItem)
 
 		#self.miFileDB = menuFile.Append(-1, "&Access Database\tCtrl-E", "Access database")
 
 		#self.miCleanFiles = menuFile.Append(-1, "Formatting Data Files", "Formatting data file")
 		#self.Bind(wx.EVT_MENU, self.OnFormatData, self.miCleanFiles)
 
-		self.miPath = menuFile.Append(-1, "Data Repository Path", "Data repository path")
+		self.miPath = menuFile.Append(-1, "Change Data Repository Path", "Edit current data repository path")
 		self.Bind(wx.EVT_MENU, self.OnPATH, self.miPath)
 
-		self.miImport = menuFile.Append(-1, "Import Data Repository", "Import Data repository")
+		self.miImport = menuFile.Append(-1, "Import Data from Existing Repository", "Import data from one or more sites in an existing repository")
 		self.Bind(wx.EVT_MENU, self.OnIMPORT_DATA, self.miImport)
 
 		menuFile.AppendSeparator()
 
-		self.miConnection = menuFile.Append(-1, "Connect to Corelyzer", "Connect to Corelyzer")
-		self.Bind(wx.EVT_MENU, self.OnCONNECTION, self.miConnection)
+		# self.miConnection = menuFile.Append(-1, "Connect to Corelyzer", "Connect to Corelyzer")
+		# self.Bind(wx.EVT_MENU, self.OnCONNECTION, self.miConnection)
 
-		menuFile.AppendSeparator()
+		# menuFile.AppendSeparator()
 
-		self.miFileSave = menuFile.Append(-1, "Save", "Save changes")
+		self.miFileSave = menuFile.Append(wx.ID_SAVE, "", "Save changes")
 		self.Bind(wx.EVT_MENU, self.OnSave, self.miFileSave)
 
 		menuFile.AppendSeparator()
 
-		self.miFileClear = menuFile.Append(-1, "Clear All Ties\tCtrl-C", "Clear all")
-		self.Bind(wx.EVT_MENU, self.OnClearAllData, self.miFileClear)
+		# 1/15/2019 brg: We've elected to hide these menu items for now. Functionality
+		# is available from other controls, or unused (Core-Log) at present.
+		# self.miFileClear = menuDummy.Append(-1, "Clear All Ties\tCtrl-C", "Clear all")
+		# self.Bind(wx.EVT_MENU, self.OnClearAllData, self.miFileClear)
 
-		self.miFileClearco = menuFile.Append(-1, "Clear All Shifts", "Clear composite ties")
-		self.Bind(wx.EVT_MENU, self.OnClearComposite, self.miFileClearco)
+		# self.miFileClearco = menuDummy.Append(-1, "Clear All Shifts", "Clear composite ties")
+		# # self.Bind(wx.EVT_MENU, self.OnClearComposite, self.miFileClearco)
 
-		self.miFileClearsp = menuFile.Append(-1, "Clear All Splice Ties", "Clear splice ties")
-		self.Bind(wx.EVT_MENU, self.OnClearSpliceTie, self.miFileClearsp)
+		# self.miFileClearsp = menuDummy.Append(-1, "Clear All Splice Ties", "Clear splice ties")
+		# self.Bind(wx.EVT_MENU, self.OnClearSpliceTie, self.miFileClearsp)
 
-		self.miFileClearsa = menuFile.Append(-1, "Clear All Core-Log Ties", "Clear core-log ties")
-		self.Bind(wx.EVT_MENU, self.OnClearSAGANTie, self.miFileClearsa)
+		# self.miFileClearsa = menuDummy.Append(-1, "Clear All Core-Log Ties", "Clear core-log ties")
+		# self.Bind(wx.EVT_MENU, self.OnClearSAGANTie, self.miFileClearsa)
 
-		menuFile.AppendSeparator()
+		# menuFile.AppendSeparator()
 
-		miFileExit = menuFile.Append(wx.ID_EXIT, "&Exit\tCtrl-X", "Exit demo")
-		self.Bind(wx.EVT_MENU, self.OnExitButton, miFileExit)
+		miFileExit = menuFile.Append(wx.ID_EXIT, "&Exit\tCtrl-X", "Exit Correlator")
+		self.Bind(wx.EVT_MENU, self.OnExitAction, miFileExit)
+		self.Bind(wx.EVT_CLOSE, self.OnClose)
 		menuBar.Append(menuFile, "&File")
 
 		# View 
 		menuView = wx.Menu()
-		self.mitool = menuView.AppendCheckItem(-1, "Toolbar", "Toolbar")
+		self.mitool = menuView.AppendCheckItem(-1, "Show Toolbar", "Show/hide toolbar")
 		self.mitool.Check(True)
 		self.Bind(wx.EVT_MENU, self.SHOWToolbar, self.mitool)
 
 		menuView.AppendSeparator()
-		self.miplot = menuView.AppendCheckItem(-1, "Discrete Points", "Discrete Points")
+		self.miplot = menuView.AppendCheckItem(-1, "Plot Discrete Points", "Plot data as points instead of a line")
 		self.Bind(wx.EVT_MENU, self.SETPlotMode, self.miplot)
 
-		self.miptsizeup = menuView.Append(-1, "Point Size Up", "Point Size Up")
+		self.miptsizeup = menuView.Append(-1, "Increase Point Size", "Make discrete data points larger")
 		self.Bind(wx.EVT_MENU, self.SetPT_SIZEUP, self.miptsizeup)
 		
-		self.miptsizeDown = menuView.Append(-1, "Point Size Down", "Point Size Down")
+		self.miptsizeDown = menuView.Append(-1, "Decrease Point Size", "Make discrete data points smaller")
 		self.Bind(wx.EVT_MENU, self.SetPT_SIZEDOWN, self.miptsizeDown)
 
 		menuView.AppendSeparator()
-		self.mitiesizeup = menuView.Append(-1, "Tie Point Size Up", "Tie Point Size Up")
+		self.mitiesizeup = menuView.Append(-1, "Increase Tie Point Size", "Make affine tie points larger")
 		self.Bind(wx.EVT_MENU, self.SetTIE_SIZEUP, self.mitiesizeup)
 
-		self.mitiesizeDown = menuView.Append(-1, "Tie Point Size Down", "Tie Point Size Down")
+		self.mitiesizeDown = menuView.Append(-1, "Decrease Tie Point Size", "Make affine tie points smaller")
 		self.Bind(wx.EVT_MENU, self.SetTIE_SIZEDOWN, self.mitiesizeDown)
 
-		self.mitiewidthup = menuView.Append(-1, "Tie Line Thickness Up", "Tie Line Thickness Up")
+		self.mitiewidthup = menuView.Append(-1, "Increase Tie Line Thickness", "Make TIE lines thicker")
 		self.Bind(wx.EVT_MENU, self.SetTIE_WIDTHUP, self.mitiewidthup)
-		self.mitiewidthDown = menuView.Append(-1, "Tie Line Thickness Down", "Tie Line Thickness Down")
+		self.mitiewidthDown = menuView.Append(-1, "Decrease Tie Line Thickness", "Make TIE lines thinner")
 		self.Bind(wx.EVT_MENU, self.SetTIE_WIDTHDOWN, self.mitiewidthDown)
 
 		menuView.AppendSeparator()
-		self.misecond = menuView.AppendCheckItem(-1, "Splice/Log Window", "Splice/Log window")
+		self.misecond = menuView.AppendCheckItem(-1, "Show Splice Window", "Splice Window")#Splice/Log Window", "Splice/Log window")
 		self.misecond.Check(True)
 		self.Bind(wx.EVT_MENU, self.SHOWSplice, self.misecond)
 
-		menuView.AppendSeparator()
-		self.miscroll = menuView.AppendCheckItem(-1, "Second Scroll", "Second scroll")
-		self.miscroll.Check(False)
-		self.Bind(wx.EVT_MENU, self.SHOWScroll, self.miscroll)
+		# self.miIndependentScroll = menuView.AppendCheckItem(-1, "Independent Splice Scrollbar", "Composite and splice areas scroll independently")
+		# self.miIndependentScroll.Check(False)
+		# self.Bind(wx.EVT_MENU, self.IndependentScrollSelected, self.miIndependentScroll)
 
 		# 11/2/2013 brg: Removing for now - graph area layouts can get pretty screwed up
 		# with repeated font size changes (the top graph info area can end up in negative
@@ -312,9 +305,9 @@ class MainFrame(wx.Frame):
 		#self.Bind(wx.EVT_MENU, self.SETTextSizeDown, self.mitextsizeDown)
 
 		menuView.AppendSeparator()
-		self.miScrollbigger = menuView.Append(-1, "Bigger Scroll", "Bigger Scroll")
+		self.miScrollbigger = menuView.Append(-1, "Wider Scrollbars", "Make scrollbars wider")
 		self.Bind(wx.EVT_MENU, self.UseWideScrollbars, self.miScrollbigger)
-		self.miScrollnormal = menuView.Append(-1, "Smaller Scroll", "Smaller Scroll")
+		self.miScrollnormal = menuView.Append(-1, "Narrower Scrollbars", "Make scrollbars narrower")
 		self.Bind(wx.EVT_MENU, self.UseNarrowScrollbars, self.miScrollnormal)
 		
 		menuBar.Append(menuView, "&View")
@@ -325,12 +318,17 @@ class MainFrame(wx.Frame):
 		self.Bind(wx.EVT_MENU, self.OnAbout, self.miAbout)
 		menuBar.Append(menuHelp, "&Help")
 
-		self.OnDisableMenu(0, False)
+		# self.OnDisableMenu(0, False)
 
 		# bind keystrokes to the frame
 		# self.Bind(wx.EVT_KEY_DOWN, self.OnKeyEvent)
 		return menuBar
-		
+	
+	def OnPreferences(self, event):
+		dlg = dialog.ApplicationPreferencesDialog(self, Prefs.getAll())
+		if dlg.ShowModal() == wx.ID_OK:
+			Prefs.setAll(dlg.prefsMap)
+			Prefs.write()
 
 	def OnIMPORT_DATA(self, event):
 		opendlg = wx.DirDialog(self, "Select Repository Directory to Import", myPath)
@@ -338,17 +336,17 @@ class MainFrame(wx.Frame):
 		path = opendlg.GetPath()
 		opendlg.Destroy()
 		updated = False
-		if ret == wx.ID_OK :
+		if ret == wx.ID_OK:
 			# check....
-			if os.access(path + '/datalist.db', os.F_OK) == False :
+			if os.access(path + '/datalist.db', os.F_OK) == False:
 				self.OnShowMessage("Error", "It doesn't have datalist.db", 1)
 				return
 			datalist = []
 			dblist_f = open(self.DBPath + 'db/datalist.db', 'r+')
-			for line in dblist_f :
-				if len(line) > 0 :
+			for line in dblist_f:
+				if len(line) > 0:
 					token = line.split()
-					if len(token) == 0 :
+					if len(token) == 0:
 						continue
 					first_token = token[0]
 					datalist.append(first_token)
@@ -360,51 +358,51 @@ class MainFrame(wx.Frame):
 			os.chdir(path)
 			single_flag = False
 			first_token = ""
-			for line in importdb_f :
-				if len(line) > 0 :
+			for line in importdb_f:
+				if len(line) > 0:
 					token = line.split()
-					if len(token) == 0 :
+					if len(token) == 0:
 						continue
 					first_token = token[0]
-					if first_token.find("-", 0) >= 0 :
+					if first_token.find("-", 0) >= 0:
 						found_flag = False
-						for dataitem in datalist : 
-							if first_token == dataitem :
+						for dataitem in datalist: 
+							if first_token == dataitem:
 								found_flag = True 
 								break
-						if found_flag == True :
+						if found_flag == True:
 							os.chdir(workingdir)
 							self.OnShowMessage("Error", "There is already " + first_token, 1)
 							os.chdir(path)
-						else :
+						else:
 							dblist_f.write("\n"+ first_token+"\n")
 							cmd = "cp -rf " +  first_token + " " + self.DBPath + "db/"
-							if sys.platform == 'win32' :
+							if sys.platform == 'win32':
 								os.chdir(self.DBPath+ "db")
-								if os.access(first_token, os.F_OK) == False :
+								if os.access(first_token, os.F_OK) == False:
 									os.mkdir(first_token)
 								os.chdir(path + "\\" + first_token)
 								cmd = "copy * \"" + self.DBPath + "db\\" + first_token + "\""
 								#print "[DEBUG] " + cmd
 								os.system(cmd)								
 								os.chdir(path)
-							else :
+							else:
 								#print "[DEBUG] " + cmd
 								os.system(cmd)
 							updated = True 
-							if self.logFileptr != None :
-								global_logFile.write("Add Data Repository : " + first_token + "\n")
-					else :
+							if self.logFileptr != None:
+								global_logFile.write("Add Data Repository: " + first_token + "\n")
+					else:
 						single_flag = True 
 						break
-			if single_flag == True :
+			if single_flag == True:
 				first_token = ""
-				for line in importdb_f :
-					if len(line) > 0 :
+				for line in importdb_f:
+					if len(line) > 0:
 						token = line.split()
-						if len(token) == 0 :
+						if len(token) == 0:
 							continue
-						if token[0] == "file:" :
+						if token[0] == "file:":
 							filename = token[1]
 							start = 0
 							last = filename.find("-", start)
@@ -413,36 +411,36 @@ class MainFrame(wx.Frame):
 							first_token = filename[0:last]
 							break
 				found_flag = False
-				for dataitem in datalist : 
-					if first_token == dataitem :
+				for dataitem in datalist: 
+					if first_token == dataitem:
 						found_flag = True 
 						break
-				if found_flag == True :
+				if found_flag == True:
 					os.chdir(workingdir)
 					self.OnShowMessage("Error", "There is already " + first_token, 1)
 					os.chdir(path)
-				else :
+				else:
 					dblist_f.write("\n"+ first_token+"\n")
 					os.chdir(self.DBPath+ "db")
-					if os.access(first_token, os.F_OK) == False :
+					if os.access(first_token, os.F_OK) == False:
 						os.mkdir(first_token)
 					os.chdir(path)
 					cmd = "cp -rf * " + self.DBPath + "db/" + first_token
-					if sys.platform == 'win32' :
+					if sys.platform == 'win32':
 						cmd = "copy * \"" + self.DBPath + "db\\" + first_token + "\""
 						#print "[DEBUG] " + cmd
 						os.system(cmd)
-					else :
+					else:
 						#print "[DEBUG] " + cmd
 						os.system(cmd)
 					updated = True 
-					if self.logFileptr != None :
-						global_logFile.write("Add Data Repository : " + first_token + "\n")
+					if self.logFileptr != None:
+						global_logFile.write("Add Data Repository: " + first_token + "\n")
 			os.chdir(workingdir)
 			importdb_f.close()
 			dblist_f.close()
 
-			if updated == True :
+			if updated == True:
 				self.dataFrame.dataPanel.ClearGrid()
 				self.dataFrame.tree.DeleteAllItems()
 				self.dataFrame.root = self.dataFrame.tree.AddRoot("Root")
@@ -452,62 +450,54 @@ class MainFrame(wx.Frame):
 
 
 	def IMPORTRepository(self):
-		while True :
+		while True:
 			opendlg = wx.DirDialog(self, "Select Previous Repository Directory", myPath)
 			ret = opendlg.ShowModal()
 			path = opendlg.GetPath()
 			opendlg.Destroy()
-			if ret == wx.ID_OK :
-				if os.access(path + '/default.cfg', os.F_OK) == False :
+			if ret == wx.ID_OK:
+				if os.access(path + '/default.cfg', os.F_OK) == False:
 					self.OnShowMessage("Error", "It's not Repository Root", 1)
 					continue
-				if os.access(path + '/db/datalist.db', os.F_OK) == False :
+				if os.access(path + '/db/datalist.db', os.F_OK) == False:
 					self.OnShowMessage("Error", "It's not Repository Root", 1)
 					continue
 
 				workingdir = os.getcwd()
 				os.chdir(path)
 				cmd = "cp -rf * " + myPath
-				if sys.platform == 'win32' :
+				if sys.platform == 'win32':
 					cmd = "copy * \"" + myPath + "\""
 				os.system(cmd)
 				os.chdir(workingdir)
 
 				#cmd = "rm -rf  " + path
-				#if sys.platform == 'win32' :
+				#if sys.platform == 'win32':
 				#	cmd = "rd /s /q " + path
 				#os.system(cmd)
 				break
-			else :
+			else:
 				break
 
 	def SHOWToolbar(self, event):
-		if self.mitool.IsChecked() == False :
-			self.optPanel.tool.SetValue(False)
-			self.topMenu.Show(False)
-		else :
-			self.optPanel.tool.SetValue(True)
-			self.topMenu.Show(True)
+		self.topMenu.Show(self.mitool.IsChecked())
 
 	def SETPlotMode(self, event):
-		if self.miplot.IsChecked() == False :
+		if self.miplot.IsChecked() == False:
 			self.Window.DiscretePlotMode = 0 
-		else :
+		else:
 			self.Window.DiscretePlotMode = 1
 		self.Window.UpdateDrawing()
 		
 
 	def SHOWSplice(self, event):
-		if self.misecond.IsChecked() == True :
+		if self.misecond.IsChecked() == True:
 			self.OnActivateWindow(1)
-		else :
+		else:
 			self.OnActivateWindow(0)
 
-	def SHOWScroll(self, event):
-		if self.miscroll.IsChecked() == True :
-			self.SetSecondScroll(1)
-		else :
-			self.SetSecondScroll(0)
+	# def IndependentScrollSelected(self, event):
+	# 	self.SetIndependentScroll(self.miIndependentScroll.IsChecked())
 
 	def OnUpdateHelp(self):
 		self.Window.helpText.Clear()
@@ -529,7 +519,7 @@ class MainFrame(wx.Frame):
 
 	def SetPT_SIZEDOWN(self, evt):
 		self.Window.DiscretetSize = self.Window.DiscretetSize - 1
-		if self.Window.DiscretetSize < 1 :
+		if self.Window.DiscretetSize < 1:
 			self.Window.DiscretetSize = 1
 		self.Window.UpdateDrawing()
 
@@ -539,19 +529,19 @@ class MainFrame(wx.Frame):
 
 	def SetTIE_SIZEDOWN(self, evt):
 		self.Window.tieDotSize = self.Window.tieDotSize - 2 
-		if self.Window.tieDotSize < 8 :
+		if self.Window.tieDotSize < 8:
 			self.Window.tieDotSize = 8 
 		self.Window.UpdateDrawing()
 
 	def SetTIE_WIDTHUP(self, evt):
 		self.Window.tieline_width +=  1
-		if self.Window.tieline_width > 3 :
+		if self.Window.tieline_width > 3:
 			self.Window.tieline_width = 3
 		self.Window.UpdateDrawing()
 
 	def SetTIE_WIDTHDOWN(self, evt):
 		self.Window.tieline_width -=  1
-		if self.Window.tieline_width < 1 :
+		if self.Window.tieline_width < 1:
 			self.Window.tieline_width = 1 
 		self.Window.UpdateDrawing()
 
@@ -598,13 +588,14 @@ class MainFrame(wx.Frame):
 		self.ScaleScrollbar("MovableSkin", -self.Window.ScrollSize - 5, None)
 		self.ScaleScrollbar("Skin", -self.Window.ScrollSize, None)
 		self.ScaleScrollbar("HScroll", None, -self.Window.ScrollSize, horizontal=True)
-				
-	def OnDisableMenu(self, type, enable):
-		if type == 1 or type == 0 : 
-			self.miFileClear.Enable(enable)
-			self.miFileClearco.Enable(enable)
-			self.miFileClearsp.Enable(enable)
-			self.miFileClearsa.Enable(enable)
+
+	# 1/15/2019 hiding these menu items				
+	# def OnDisableMenu(self, type, enable):
+	# 	if type == 1 or type == 0: 
+	# 		self.miFileClear.Enable(enable)
+	# 		self.miFileClearco.Enable(enable)
+	# 		self.miFileClearsp.Enable(enable)
+	# 		self.miFileClearsa.Enable(enable)
 
 	# update global Evaluation Graph parameters
 	def OnEvalSetup(self, depthStep, winLength, leadLag):
@@ -613,15 +604,6 @@ class MainFrame(wx.Frame):
 		self.leadLag = leadLag
 		py_correlator.setEvalGraph(self.depthStep, self.winLength, self.leadLag)
 
-	def CanAdjustCore(self, hole, core, shiftBelow):
-		adjust = True
-		allowShift = self.spliceManager.allowAffineShift(hole, core, shiftBelow)
-		if not allowShift:
-			msg = "This affine shift affects cores included in the current splice. These cores will be removed from the splice. Do you want to continue?"
-			override = self.OnShowMessage("Warning", msg, 0)
-			adjust = override == wx.ID_YES
-		return adjust
-	
 	def OnAdjustCore(self, opt, type):
 		self.Window.OnAdjustCore(opt, type)
 
@@ -658,7 +640,7 @@ class MainFrame(wx.Frame):
 
 	def OnUpdateDepthStep(self):
 		self.depthStep = py_correlator.getAveDepStep()
-		self.minDepthStep = int(10000.0 * float(self.depthStep)) / 10000.0;
+		self.minDepthStep = int(10000.0 * float(self.depthStep)) / 10000.0
 
 		self.compositePanel.OnUpdatePlots()
 		self.splicePanel.OnUpdate()
@@ -687,11 +669,10 @@ class MainFrame(wx.Frame):
 		self.Window.OnUndoSplice()
 
 	def OnUpdateGraph(self):
-		if self.showCompositePanel == 1 :
-			self.compositePanel.OnUpdateDrawing()
-		elif self.showSplicePanel == 1 : 
+		self.compositePanel.OnUpdateDrawing()
+		if self.showSplicePanel == 1: 
 			self.spliceIntervalPanel.OnUpdate()
-		elif self.showELDPanel == 1 :
+		elif self.showELDPanel == 1:
 			self.eldPanel.OnUpdateDrawing()
 
 
@@ -709,35 +690,34 @@ class MainFrame(wx.Frame):
 		max = -1.0
 		best = 0
 		len_max = len(coef) -1
-		for i in range(numleadLag) : 
+		for i in range(numleadLag): 
 			last = coef.find(",", start)
-			if start == last :
-				break;
+			if start == last:
+				break
 			depth = float(coef[start:last])
 			start = last +1
 			last = coef.find(",", start)
-			if start == last :
-				break;
+			if start == last:
+				break
 			value = float(coef[start:last])
 
-			if max < value :
+			if max < value:
 				max = value
 				best = depth 
 			l.append( (depth, value) ) 
 			start = last +1
-			if start >= len_max :
+			if start >= len_max:
 				break
 
-		bestdata = [ (best, -0.05),( best, 0.05) ]
+		bestdata = [ (best, -0.05), (best, 0.05) ] # best correlation
 
 		if len(l) <= 1:
 			l = [ (-1.0, -1.0), (0, 0), (1.0, 1.0) ]
 
-		if self.showCompositePanel == 1 :
-			self.compositePanel.OnAddFirstData(l, bestdata, best)
-		elif self.showSplicePanel == 1 : 
+		self.compositePanel.OnAddFirstData(l, bestdata, best)
+		if self.showSplicePanel == 1: 
 			self.spliceIntervalPanel.OnAddFirstData(l, bestdata, best)
-		elif self.showELDPanel == 1 :
+		elif self.showELDPanel == 1:
 			self.eldPanel.OnAddFirstData(l, bestdata, best)
 
 
@@ -750,45 +730,40 @@ class MainFrame(wx.Frame):
 		win_length = depth2 - self.winLength
 
 		max = len(coef) -1
-		for i in range(numleadLag) : 
+		for i in range(numleadLag): 
 			last = coef.find(",", start)
-			if start == last :
-				break;
+			if start == last:
+				break
 			depth = float(coef[start:last])
 			start = last +1
 			last = coef.find(",", start)
-			if start == last :
-				break;
+			if start == last:
+				break
 			value = float(coef[start:last])
 			l.append( (depth, value) ) 
 			start = last +1
-			if start >= max :
+			if start >= max:
 				break
 
-		if self.showCompositePanel == 1 :
-			self.compositePanel.OnAddData(l)
-		elif self.showSplicePanel == 1 : 
+		self.compositePanel.OnAddData(l)
+		if self.showSplicePanel == 1: 
 			self.spliceIntervalPanel.OnAddData(l)
-		elif self.showELDPanel == 1 :
+		elif self.showELDPanel == 1:
 			self.eldPanel.OnAddData(l)
 
-	def OnHide(self, event):
-		self.SavePreferences()
+	# Called when Exit menu item or button is used. Pass None
+	# for OnClose() event since triggeirng event was a CommandEvent,
+	# not a CloseEvent and therefore doesn't have the Veto() method.
+	def OnExitAction(self, event):
+		self.OnClose(event=None)
 
-		WIN_WIDTH = self.Width 
-		WIN_HEIGHT = self.Height 
-		if self.logFileptr != None :
-			s = "\n" + str(datetime.today()) + "\n"
-			self.logFileptr.write(s)
-			self.logFileptr.write("Close of Session.\n\n")
-			self.logFileptr.close()
-			self.logFileptr = None
-
-		app.ExitMainLoop()
-
-	def OnExitButton(self, event):
-		if self.client != None :
-			if self.Window.HoleData != [] : 
+	# Bound directly only to wx.EVT_CLOSE, triggered by native window "X"
+	# button. In that case event is a CloseEvent, which should be vetoed
+	# if user opts to Cancel exit.
+	# event - a CloseEvent if triggered by wx.EVT_CLOSE, otherwise None
+	def OnClose(self, event):
+		if self.client != None:
+			if self.Window.HoleData != []: 
 				try:
 					self.client.send("delete_all\n")
 				except Exception, E:
@@ -801,152 +776,122 @@ class MainFrame(wx.Frame):
 			self.client = None
 			print "[DEBUG] Close connection to Corelyzer"
 
-		if self.CurrentDir != '' and self.CHECK_CHANGES():
+		if self.CurrentDir != '' and self.UnsavedChanges():
 			ret = self.OnShowMessage("About", "Do you want to save changes?", 2)
-			if ret == wx.ID_OK :
+			if ret == wx.ID_OK:
 				self.topMenu.OnSAVE(event)
-
-				self.AffineChange = False 
-				self.SpliceChange = False 
-				self.EldChange = False 
-				self.AgeChange = False 
-				self.TimeChange = False 
+				self.AffineChange = False
+				self.SpliceChange = False
+				self.EldChange = False
+				self.AgeChange = False
+				self.TimeChange = False
 
 		ret = self.OnShowMessage("About", "Do you want to Exit?", 2)
-		if ret == wx.ID_CANCEL :
+		if ret == wx.ID_CANCEL:
+			if event is not None:
+				event.Veto()
 			return
 
 		self.SavePreferences()
-		if self.logFileptr != None :
+		if self.logFileptr != None:
 			s = "\n" + str(datetime.today()) + "\n"
 			self.logFileptr.write(s)
 			self.logFileptr.write("Close of Session.\n\n")
 			self.logFileptr.close()
 			self.logFileptr = None
 
-		WIN_WIDTH = self.Width 
-		WIN_HEIGHT = self.Height 
-
 		self.Window.Close(True)
 		self.dataFrame.Close(True)
 		self.topMenu.Close(True)
-
-		self.Close(True)
-
+		self.Destroy()
 		app.ExitMainLoop()
 
-
-	def CHECK_CHANGES(self):
+	def UnsavedChanges(self):
 		affineChange = self.affineManager.isDirty()
 		spliceChange = self.spliceManager.isDirty()
-		return affineChange or spliceChange or self.EldChange or self.AgeChange or self.TimeChange
+		return affineChange or spliceChange
 
 	def OnActivateWindow(self, event):
-		if self.Window.spliceWindowOn == 1 :
-			self.Window.isSecondScrollBackup = self.Window.isSecondScroll 
-			self.Window.isSecondScroll = 0
+		if self.Window.spliceWindowOn == 1:
 			self.Window.spliceWindowOn = 0
 			self.Window.splicerBackX = self.Window.splicerX
 			self.Window.splicerX = self.Window.Width + 45 
-			self.optPanel.opt1.SetValue(False)
-			self.optPanel.opt2.Enable(False)
-		else :
-			self.Window.isSecondScroll = self.Window.isSecondScrollBackup 
-			self.Window.spliceWindowOn = 1 
+			self.optPanel.showSpliceWindow.SetValue(False)
+			# self.optPanel.indSpliceScroll.Enable(False)
+		else:
+			self.Window.spliceWindowOn = 1
 			self.Window.splicerX = self.Window.splicerBackX
-			self.optPanel.opt1.SetValue(True)
-			self.optPanel.opt2.Enable(True)
+			self.optPanel.showSpliceWindow.SetValue(True)
+			# self.optPanel.indSpliceScroll.Enable(True)
 		self.Window.UpdateDrawing()
 
-	def SetSecondScroll(self, event):
-		if self.Window.isSecondScroll == 1 : 
-			self.Window.isSecondScroll = 0 
-			self.optPanel.opt2.SetValue(False)
-		else :
-			self.Window.isSecondScroll = 1 
-			self.optPanel.opt2.SetValue(True)
+	# enable/disable independent splice scrolling
+	# def SetIndependentScroll(self, enable):
+	# 	self.Window.independentScroll = enable
+	# 	self.optPanel.indSpliceScroll.SetValue(enable)
+	# 	self.miIndependentScroll.Check(enable)
 
-
-	def RebuildComboBox(self, comboBox, typeNames, hasSpliceData, hasLogData):
-		prevSelected = comboBox.GetCurrentSelection()
-		if prevSelected == -1 :
-			prevSelected = 0
-
+	def RebuildComboBox(self, comboBox, typeNames):
 		comboBox.Clear()
-		comboBox.Append("All Holes")
-		for type in typeNames:
-			typeStr = "All " + type
-			if comboBox.FindString(typeStr) == wx.NOT_FOUND:
-				comboBox.Append(typeStr)
-
-		if hasSpliceData == True:
-			comboBox.Append("Spliced Records")
-		if hasLogData == True:
-			comboBox.Append("Log")
-
-		comboBox.SetSelection(prevSelected)
-
-		return prevSelected
-
+		if len(typeNames) > 0:
+			for datatype in typeNames:
+				if comboBox.FindString(datatype) == wx.NOT_FOUND:
+					comboBox.Append(datatype)
+			comboBox.SetSelection(0)
 
 	def RefreshTypeComboBoxes(self):
 		if self.filterPanel.locked == False:
 			holeData = self.Window.HoleData
-			hasSpliceData = (self.Window.SpliceData != [])
-			hasLogData = (self.Window.LogData != [])
 
-			# extract type names
+			# extract type names from self.Window.HoleData
 			typeNames = []
 			if len(holeData) > 0:
 				for holeIdx in range(len(holeData)):
 					typeNames.append(holeData[holeIdx][0][0][2])
 
-			self.filterPanel.prevSelected = self.RebuildComboBox(self.filterPanel.all, typeNames, hasSpliceData, hasLogData)
-			self.optPanel.prevSelected = self.RebuildComboBox(self.optPanel.all, typeNames, hasSpliceData, hasLogData)
-
+			self.RebuildComboBox(self.filterPanel.all, typeNames)
+			self.filterPanel.SetTYPE(event=None) # update controls to reflect current selection
+			self.RebuildComboBox(self.optPanel.variableChoice, typeNames)
+			self.optPanel.SetTYPE(event=None)
 
 	def UpdateSECTION(self):
 		self.Window.SectionData = []
 		ret = py_correlator.getData(18)
-		if ret != "" :
+		if ret != "":
 			self.ParseSectionSend(ret)
 
 	def UpdateCORE(self):
 		self.Window.HoleData = []
 		ret = py_correlator.getData(0)
-		if ret != "" :
+		if ret != "":
 			self.LOCK = 0
 			self.PrevDataType = ""
 			self.ParseData(ret, self.Window.HoleData)
 			self.UpdateMinMax()
 			self.LOCK = 1
 
-			self.RefreshTypeComboBoxes()
-
 	def UpdateSMOOTH_CORE(self):
 		self.Window.SmoothData = []
 		ret = py_correlator.getData(1)
-		if ret != "" :
+		if ret != "":
 			self.filterPanel.OnLock()
 			self.ParseData(ret, self.Window.SmoothData)
 			self.filterPanel.OnRelease()
 
-
 	def InitSPLICE(self):
 		ret = py_correlator.getData(2)
-		if ret != "" :
+		if ret != "":
 			self.ParseSpliceData(ret, False)
-
 
 	# 2/22/2017 does this do anything at this point? Shouldn't be any splice data on C++ side
 	def UpdateSPLICE(self, locked):
 		self.Window.SpliceData = []
 		ret = ""
-		if locked == True : 
+		if locked == True: 
 			ret = py_correlator.getData(15)
-		else :
+		else:
 			ret = py_correlator.getData(3)
-		if ret != "" :
+		if ret != "":
 			self.filterPanel.OnLock()
 			self.ParseData(ret, self.Window.SpliceData)
 			self.filterPanel.OnRelease()
@@ -955,11 +900,11 @@ class MainFrame(wx.Frame):
 	def UpdateSMOOTH_SPLICE(self, locked):
 		self.Window.SpliceSmoothData = []
 		ret =""
-		if locked == True : 
+		if locked == True: 
 			ret = py_correlator.getData(16)
-		else :
+		else:
 			ret = py_correlator.getData(4)
-		if ret != "" :
+		if ret != "":
 			self.filterPanel.OnLock()	
 			self.ParseData(ret, self.Window.SpliceSmoothData)
 			self.filterPanel.OnRelease()
@@ -967,34 +912,34 @@ class MainFrame(wx.Frame):
 
 	def UpdateLOGSPLICE(self, locked):
 		self.Window.LogSpliceData = []
-		if self.Window.isLogMode == 1 :
+		if self.Window.isLogMode == 1:
 			ret =""
-			if locked == True : 
+			if locked == True: 
 				ret = py_correlator.getData(14)
-			else :
+			else:
 				ret = py_correlator.getData(8)
-			if ret != "" :
+			if ret != "":
 				self.filterPanel.OnLock()
 				self.ParseData(ret, self.Window.LogSpliceData)
 				self.filterPanel.OnRelease()
 
 
 	def UpdateSMOOTH_LOGSPLICE(self, locked):
-		#if self.Window.isLogMode == 1 and len(self.Window.SpliceData) > 0 :
+		#if self.Window.isLogMode == 1 and len(self.Window.SpliceData) > 0:
 		#	locked = True
 		self.Window.LogSpliceSmoothData = []
 		ret = ""
-		if locked == True : 
+		if locked == True: 
 			ret = py_correlator.getData(17)
-		else :
+		else:
 			ret = py_correlator.getData(10)
-		if ret != "" :
+		if ret != "":
 			self.filterPanel.OnLock()	
 			self.ParseData(ret, self.Window.LogSpliceSmoothData)
 			self.filterPanel.OnRelease()
-		else :
+		else:
 			ret = py_correlator.getData(4)
-			if ret != "" :
+			if ret != "":
 				self.filterPanel.OnLock()	
 				self.ParseData(ret, self.Window.LogSpliceSmoothData)
 				self.filterPanel.OnRelease()
@@ -1019,13 +964,8 @@ class MainFrame(wx.Frame):
 		self.UpdateCORE()
 		self.UpdateSMOOTH_CORE()
 		self.UpdateSPLICE(False)
-		#self.UpdateSMOOTH_SPLICE(False)
 		self.UpdateShiftTie()
-
-		# splice
-		# UpdateStratData
 		self.Window.UpdateDrawing()
-		return
 
 	def UpdateShiftTie(self):
 		ret = py_correlator.getData(21)
@@ -1039,9 +979,8 @@ class MainFrame(wx.Frame):
 		dlg.ShowModal()
 		dlg.Destroy()
 
-	def OnShowMessage(self, type, msg, numButton): 
-		#dlg = dialog.MessageDialog(None, type, msg, numButton)
-		dlg = dialog.MessageDialog(self.topMenu, type, msg, numButton)
+	def OnShowMessage(self, type, msg, numButton, makeNoDefault=False):
+		dlg = dialog.MessageDialog(self, type, msg, numButton, makeNoDefault)
 		dlg.Centre(wx.CENTER_ON_SCREEN)
 		ret = dlg.ShowModal()
 		dlg.Destroy()
@@ -1054,7 +993,7 @@ class MainFrame(wx.Frame):
 		self.eldPanel.UpdateTieInfo(info, depth, tieNo)
 
 	def ClearSaganTie(self, tieNo):
-		if tieNo == -1 :
+		if tieNo == -1:
 			self.Window.LogTieData = []
 			self.Window.logTie = -1
 			self.LogselectedTie = -1
@@ -1068,11 +1007,11 @@ class MainFrame(wx.Frame):
 		ret = opendlg.ShowModal()
 		path = opendlg.GetPath()
 		opendlg.Destroy()
-		if ret == wx.ID_OK :
+		if ret == wx.ID_OK:
 			py_correlator.openAttributeFile(path, 0)
 			s = "Affine Table: " + path + "\n\n"
 			self.logFileptr.write(s)
-			#if self.showReportPanel == 1 :
+			#if self.showReportPanel == 1:
 			#	self.OnUpdateReport() 
 			self.UpdateData()
 
@@ -1081,95 +1020,95 @@ class MainFrame(wx.Frame):
 		ret = opendlg.ShowModal()
 		path = opendlg.GetPath()
 		filterindex = opendlg.GetFilterIndex()
-		if filterindex == 0 :
+		if filterindex == 0:
 			index = path.find(".affine.table", 0)
-			if index == -1 :
+			if index == -1:
 				path = path + ".affine.table"
-		elif filterindex == 1 :
+		elif filterindex == 1:
 			index = path.find(".xml", 0)
-			if index == -1 :
+			if index == -1:
 				path = path + ".xml"
 
 		opendlg.Destroy()
-		if ret == wx.ID_OK :
+		if ret == wx.ID_OK:
 			py_correlator.saveAttributeFile(path, 1)
 
-	def OnCONNECTION(self, event):
-		if self.client is None :
-			#HOST = '127.0.0.1'
-			HOST = 'localhost'
-			PORT = 17799
-			for res in socket.getaddrinfo(HOST, PORT, socket.AF_INET, socket.SOCK_STREAM):
-				af, socktype, proto, canonname, sa = res
-				try :
-					self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM, proto)
-				except socket.error, msg :
-					self.client = None
-					continue
-				try : 
-					self.client.connect(sa)
-				except socket.error, msg :
-					self.client.close()
-					self.client = None
-					continue
-				break
+	# def OnCONNECTION(self, event):
+	# 	if self.client is None:
+	# 		#HOST = '127.0.0.1'
+	# 		HOST = 'localhost'
+	# 		PORT = 17799
+	# 		for res in socket.getaddrinfo(HOST, PORT, socket.AF_INET, socket.SOCK_STREAM):
+	# 			af, socktype, proto, canonname, sa = res
+	# 			try:
+	# 				self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM, proto)
+	# 			except socket.error, msg:
+	# 				self.client = None
+	# 				continue
+	# 			try: 
+	# 				self.client.connect(sa)
+	# 			except socket.error, msg:
+	# 				self.client.close()
+	# 				self.client = None
+	# 				continue
+	# 			break
 
-			if self.client is None :
-				#print "[DEBUG] Could not open socket to Corelyzer"
-				self.OnShowMessage("Error", "Could not open socket to Corelyzer", 1)
-				return False 
-			else :
-				#print "[DEBUG] Connected to Corelyzer"
-				self.OnShowMessage("Information", "Connected to Corelyzer", 1)
-				if self.Window.HoleData != [] :
-					# TEST
-					#self.client.send("load_section\t199\t1218\ta\t1\th\t1\t10\n")
-					#self.client.send("load_section\t199\t1218\ta\t1\th\t2\t11\n")
-					#self.client.send("load_section\t199\t1218\ta\t1\th\t3\t12\n")
-					##########
+	# 		if self.client is None:
+	# 			#print "[DEBUG] Could not open socket to Corelyzer"
+	# 			self.OnShowMessage("Error", "Could not open socket to Corelyzer", 1)
+	# 			return False 
+	# 		else:
+	# 			#print "[DEBUG] Connected to Corelyzer"
+	# 			self.OnShowMessage("Information", "Connected to Corelyzer", 1)
+	# 			if self.Window.HoleData != []:
+	# 				# TEST
+	# 				#self.client.send("load_section\t199\t1218\ta\t1\th\t1\t10\n")
+	# 				#self.client.send("load_section\t199\t1218\ta\t1\th\t2\t11\n")
+	# 				#self.client.send("load_section\t199\t1218\ta\t1\th\t3\t12\n")
+	# 				##########
 
-					self.client.send("delete_all\n")
+	# 				self.client.send("delete_all\n")
 
-					# load_lims_table
-					filename = self.dataFrame.OnGET_IMAGE_FILENAME()
-					for name in filename :
-						cmd = "load_lims_table\t" + name + "\n"
-						self.client.send(cmd);
-						#print "[DEBUG] send to Corelyzer : "  + str(cmd)
+	# 				# load_lims_table
+	# 				filename = self.dataFrame.OnGET_IMAGE_FILENAME()
+	# 				for name in filename:
+	# 					cmd = "load_lims_table\t" + name + "\n"
+	# 					self.client.send(cmd)
+	# 					#print "[DEBUG] send to Corelyzer: "  + str(cmd)
 
-					# load_core JULIAN
-					#ret = py_correlator.getData(18)
-					#self.ParseSectionSend(ret)
+	# 				# load_core JULIAN
+	# 				#ret = py_correlator.getData(18)
+	# 				#self.ParseSectionSend(ret)
 
-					cmd = "affine_table\t" + self.CurrentDir + "tmp.affine.table\n" 
-					#print "[DEBUG] send to Corelyzer : "  + str(cmd)
-					self.client.send(cmd)
+	# 				cmd = "affine_table\t" + self.CurrentDir + "tmp.affine.table\n" 
+	# 				#print "[DEBUG] send to Corelyzer: "  + str(cmd)
+	# 				self.client.send(cmd)
 
-					#client.send("load_lims_table\t/Users/julian/Desktop/CRDownloader-data/1239/holeBC.dat\n");
-					# self.client.send("show_depth_range\t"+str(self.Window.rulerStartDepth)+"\t"+str(self.Window.rulerEndDepth)+"\n")
-					# self.client.send("jump_to_depth\t"+str(self.Window.rulerStartDepth)+"\n")
-					#print "[DEBUG] " + str(self.Window.rulerStartDepth) + "\t" + str(self.Window.rulerEndDepth)
-					_depth = (self.Window.rulerStartDepth + self.Window.rulerEndDepth) / 2.0
-					self.client.send("show_depth_range\t" + str(_depth-0.7) + "\t" + str(_depth+0.7) + "\n")
+	# 				#client.send("load_lims_table\t/Users/julian/Desktop/CRDownloader-data/1239/holeBC.dat\n")
+	# 				# self.client.send("show_depth_range\t"+str(self.Window.rulerStartDepth)+"\t"+str(self.Window.rulerEndDepth)+"\n")
+	# 				# self.client.send("jump_to_depth\t"+str(self.Window.rulerStartDepth)+"\n")
+	# 				#print "[DEBUG] " + str(self.Window.rulerStartDepth) + "\t" + str(self.Window.rulerEndDepth)
+	# 				_depth = (self.Window.rulerStartDepth + self.Window.rulerEndDepth) / 2.0
+	# 				self.client.send("show_depth_range\t" + str(_depth-0.7) + "\t" + str(_depth+0.7) + "\n")
 
-				self.miConnection.SetText("Close Connection to Corelyzer");
-				return True 
-		else :
-			if self.Window.HoleData != [] :
-				try:
-					self.client.send("delete_all\n")
-				except Exception, E:
-					print "[DEBUG] Disconnect to the corelyzer"
-			try:
-				self.client.send("quit\n")
-			except Exception, E:
-				print "[DEBUG] Disconnect to the corelyzer"
-			self.client.close()
-			self.client = None
-			self.miConnection.SetText("Connect to Corelyzer");
-			print "[DEBUG] Close connection to Corelyzer"
-			self.OnShowMessage("Information", "Close connection to Corelyzer", 1)
-			return False 
+	# 			self.miConnection.SetText("Close Connection to Corelyzer")
+	# 			return True 
+	# 	else:
+	# 		if self.Window.HoleData != []:
+	# 			try:
+	# 				self.client.send("delete_all\n")
+	# 			except Exception, E:
+	# 				print "[DEBUG] Disconnect to the corelyzer"
+	# 		try:
+	# 			self.client.send("quit\n")
+	# 		except Exception, E:
+	# 			print "[DEBUG] Disconnect to the corelyzer"
+	# 		self.client.close()
+	# 		self.client = None
+	# 		self.miConnection.SetText("Connect to Corelyzer")
+	# 		print "[DEBUG] Close connection to Corelyzer"
+	# 		self.OnShowMessage("Information", "Close connection to Corelyzer", 1)
+	# 		return False 
 			
 
 	def OnPATH(self, event):
@@ -1177,25 +1116,25 @@ class MainFrame(wx.Frame):
 		ret = opendlg.ShowModal()
 		path = opendlg.GetPath()
 		opendlg.Destroy()
-		if ret == wx.ID_OK :
+		if ret == wx.ID_OK:
   			path_len = len(path) -3
 			dir_name = path[path_len:path_len+3]                      
-			if sys.platform == 'win32' :
-				if dir_name == "\\db" :
+			if sys.platform == 'win32':
+				if dir_name == "\\db":
 					path = path[0:path_len] 
-			else :
-				if dir_name == "/db" :
+			else:
+				if dir_name == "/db":
 					path = path[0:path_len] 
 			#print "[DEBUG]", path
 			oldDBPath = self.DBPath 
-			if platform_name[0] == "Windows" :
+			if platform_name[0] == "Windows":
 				self.DBPath = path  + "\\"
-			else :
+			else:
 				self.DBPath = path  + "/"
 
-			self.dataFrame.PathTxt.SetValue("Path : " + self.DBPath)
+			self.dataFrame.PathTxt.SetValue("Path: " + self.DBPath)
 			prefile = self.DBPath + "db"
-			if os.access(prefile, os.F_OK) == False :
+			if os.access(prefile, os.F_OK) == False:
 				os.mkdir(prefile)
 			self.dataFrame.dataPanel.ClearGrid()
 			self.dataFrame.tree.DeleteAllItems()
@@ -1208,28 +1147,28 @@ class MainFrame(wx.Frame):
 			self.Window.selectedType = ""
 
 			# CHECK PATH is CORRELATOR DIRECTORY...... or NOT
-			#print "[DEBUG] Data Repository path is changed : " + self.DBPath
+			#print "[DEBUG] Data Repository path is changed: " + self.DBPath
 
-			if os.access(path+"/tmp", os.F_OK) == False :
+			if os.access(path+"/tmp", os.F_OK) == False:
 				os.mkdir(path + "/tmp")
 				cmd = "cp ./tmp/*.* \"" + path + "/tmp\""
-				if platform_name[0] == "Windows" :
+				if platform_name[0] == "Windows":
 					cmd = "copy tmp\\*.* \"" + path + "\\tmp\""
 				os.system(cmd)
-			else :
-				if os.access(path+"/tmp/datatypelist.cfg", os.F_OK) == False :
+			else:
+				if os.access(path+"/tmp/datatypelist.cfg", os.F_OK) == False:
 					cmd = "cp ./tmp/*.* \"" + path + "/tmp\""
-					if platform_name[0] == "Windows" :
+					if platform_name[0] == "Windows":
 						cmd = "copy tmp\\*.* \"" + path + "\\tmp\""
 					os.system(cmd)
 				
-			#if os.access(path + "/log", os.F_OK) == False :
-			if os.path.exists(path + "/log") == False :
+			#if os.access(path + "/log", os.F_OK) == False:
+			if os.path.exists(path + "/log") == False:
 				#os.mkdir(path + "/log")
 				print "no log dir, trying to create..."
 				os.makedirs(path + "/log")
 
-			if self.logFileptr != None :
+			if self.logFileptr != None:
 				self.logFileptr.close()
 				self.logFileptr = open(path + "/" + global_logName, "a+")
 				global_logFile = self.logFileptr
@@ -1239,16 +1178,16 @@ class MainFrame(wx.Frame):
 				global_logFile.write(s)
 				s = str(datetime.today()) + "\n\n"
 				global_logFile.write(s)
-				global_logFile.write("Change Repository Directory Path : \n")
+				global_logFile.write("Change Repository Directory Path: \n")
 				global_logFile.write("from " + oldDBPath + " to " + path + "\n\n")
 
 			self.dataFrame.OnLOADCONFIG()
 				
-	def UpdateLogData(self) :
-		if len(self.Window.LogData) > 0 :	
+	def UpdateLogData(self):
+		if len(self.Window.LogData) > 0:	
 			self.Window.LogData = []
 			ret = py_correlator.getData(5)
-			if ret != "" :
+			if ret != "":
 				self.filterPanel.OnLock()
 				self.ParseData(ret, self.Window.LogData)
 				self.Window.minRangeLog = self.min
@@ -1259,11 +1198,11 @@ class MainFrame(wx.Frame):
 				self.Window.UpdateDrawing()
 
 
-	def UpdateSMOOTH_LogData(self) :
-		if len(self.Window.LogData) > 0 :	
+	def UpdateSMOOTH_LogData(self):
+		if len(self.Window.LogData) > 0:	
 			self.Window.LogSMData = []
 			ret = py_correlator.getData(19)
-			if ret != "" :
+			if ret != "":
 				self.filterPanel.OnLock()
 				self.ParseData(ret, self.Window.LogSMData)
 				self.Window.minRangeLog = self.min
@@ -1276,7 +1215,7 @@ class MainFrame(wx.Frame):
 	def OnUpdateLogData(self, flag):
 		self.Window.LogData = []
 		ret = py_correlator.getData(5)
-		if ret != "" :
+		if ret != "":
 			self.filterPanel.OnLock()
 			self.ParseData(ret, self.Window.LogData)
 			self.filterPanel.OnRelease()
@@ -1288,7 +1227,7 @@ class MainFrame(wx.Frame):
 
 	def UpdateStratData(self):
 		ret = py_correlator.getData(7)
-		if ret != "" : 
+		if ret != "": 
 			self.Window.StratData = []
 			start =0
 			last =0
@@ -1298,26 +1237,26 @@ class MainFrame(wx.Frame):
 
 			loop_flag = True
 			last = ret.find("#", start)
-			if start == last :
+			if start == last:
 				loop_flag = False 
 
-			while loop_flag :
+			while loop_flag:
 				last = ret.find(":", start)
-				if start == last :
+				if start == last:
 					start = last +1
 					last = ret.find("#", start)
-					if start == last :
+					if start == last:
 						break
 					last = ret.find(",", start)
 					hole_number = int(ret[start:last])
 					start = last +1
-					if ret[start:start+1] == ':' :
+					if ret[start:start+1] == ':':
 						continue
-					if ret[start+1:start+2] == '#' :
+					if ret[start+1:start+2] == '#':
 						break
 
 				last = ret.find("#", start)
-				if start == last :
+				if start == last:
 					break
 
 				last = ret.find(",", start)
@@ -1363,44 +1302,43 @@ class MainFrame(wx.Frame):
 				l.append(stratinfo)
 				self.Window.StratData.append(l)
 
-				if self.Window.maxAgeRange < agevalue :
+				if self.Window.maxAgeRange < agevalue:
 					self.Window.maxAgeRange = int(agevalue) + 2 
 					#self.agePanel.maxAge.SetValue(str(self.Window.maxAgeRange))
 
 				last = ret.find(":", start)
-				if start == last :
+				if start == last:
 					start = last +1
 					last = ret.find("#", start)
-					if start == last :
+					if start == last:
 						break
 					last = ret.find(",", start)
 					hole_number = int(ret[start:last])
 					start = last +1
-					if ret[start:start+1] == ':' :
+					if ret[start:start+1] == ':':
 						continue
-					if ret[start+1:start+2] == '#' :
+					if ret[start+1:start+2] == '#':
 						break
 
 				last = ret.find("#", start)
-				if start == last :
+				if start == last:
 					break
 
+	# Clear all loaded data.
 	def OnNewData(self, event):
-		if self.Window.HoleData != [] :
+		if self.Window.HoleData != []:
 			#self.logFileptr.write("Closed All Files Loaded. \n\n")
-			if event != None and self.client != None :
+			if event != None and self.client != None:
 				try:
 					self.client.send("delete_all\n")
 				except Exception, E:
 					print "[DEBUG] Disconnect to the corelyzer"
 					self.client.close()
 					self.client = None
-
 		self.RawData = ""
 		self.SmoothData = "" 
 		self.CurrentDataNo = -1
 		self.Window.OnInit()
-
 		self.compositePanel.OnInitUI()
 		self.sectionSummary = None # brg?
 		self.affineManager.clear()
@@ -1409,20 +1347,10 @@ class MainFrame(wx.Frame):
 		self.eldPanel.OnInitUI()
 		self.autoPanel.OnInitUI(True)
 		self.agePanel.OnInitUI()
-		self.filterPanel.OnInitUI()
-
 		py_correlator.cleanData(1)
-		self.OnClearData()
-		self.OnDisableMenu(0, False)
-		self.Window.UpdateDrawing()
-
-	def OnClearAllData(self, event):
-		self.OnClearData()
-
-	def OnClearData(self):
 		py_correlator.cleanData(2)
-		self.Window.TieData = []
-		self.Window.GuideCore = []
+		self.Window.ClearCompositeTies()
+		self.dataFrame.needsReload = False
 		self.affineManager.clear()
 		self.spliceManager.clear()
 		self.Window.SpliceHole = []
@@ -1439,14 +1367,8 @@ class MainFrame(wx.Frame):
 		self.UpdateLogData()
 		self.UpdateData()
 		self.OnClearSAGANTie(None)
-
-	def OnClearComposite(self, event):
-		py_correlator.cleanData(3)
-		self.Window.HoleData = []
-		self.Window.TieData = []
-		self.Window.GuideCore = []
-		self.UpdateData()
-		#self.Window.UpdateDrawing()
+		self.Window.UpdateDrawing()
+		self.Window.DisableDisplayControls()
 
 	def OnClearSpliceTie(self, event):
 		py_correlator.cleanData(4)
@@ -1465,12 +1387,12 @@ class MainFrame(wx.Frame):
 		self.Window.PreviewLog[5] = -1
 		self.Window.PreviewLog[6] = 1.0 
 		self.UpdateELD(True)
-		if self.Window.hole_sagan != -1 :
+		if self.Window.hole_sagan != -1:
 			self.Window.OnUpdateHoleELD()
 		self.eldPanel.OnInitUI()
 		self.autoPanel.OnInitUI(False)
 		self.Window.UpdateDrawing()
-		if self.Window.ELDapplied == False and self.Window.LogData != [] :
+		if self.Window.ELDapplied == False and self.Window.LogData != []:
 			self.autoPanel.OnButtonEnable(0, True)
 
 	def OnClearSpliceAll(self):
@@ -1509,7 +1431,7 @@ class MainFrame(wx.Frame):
 		ret = opendlg.ShowModal()
 		path = opendlg.GetPath()
 		opendlg.Destroy()
-		if ret == wx.ID_OK :
+		if ret == wx.ID_OK:
 			py_correlator.saveCoreData(path)
 
 	def OnSave(self, event):
@@ -1524,7 +1446,7 @@ class MainFrame(wx.Frame):
 	# save user options/preferences
 	def SavePreferences(self):
 		cmd = "cp "
-		if sys.platform == 'win32' :
+		if sys.platform == 'win32':
 			cmd = "copy "
 		cmd += myPath + "/default.cfg " + myPath + "/tmp/.default.cfg" 
 		os.system(cmd)
@@ -1535,35 +1457,36 @@ class MainFrame(wx.Frame):
 		self.WritePreferenceItem("fullscreen", self.fulls, f)
 
 		winPT = self.GetPosition()
-		if winPT[0] < 0 or winPT[1] < 0 :
+		if winPT[0] < 0 or winPT[1] < 0:
 			winPT = [0, 0]
 		self.WritePreferenceItem("winx", winPT[0], f)
 
-		if sys.platform != 'win32' :
-			if winPT[0] < 800 and winPT[1] == 0 :
+		if sys.platform != 'win32':
+			if winPT[0] < 800 and winPT[1] == 0:
 				self.WritePreferenceItem("winy", 100, f)
-			else :
+			else:
 				self.WritePreferenceItem("winy", winPT[1], f)
-		else :
+		else:
 			self.WritePreferenceItem("winy", winPT[1], f)
 
 		width, height = self.GetClientSizeTuple()
 		self.WritePreferenceItem("width", width, f)
 		self.WritePreferenceItem("height", height, f)
 
-		self.WritePreferenceItem("secondscroll", self.Window.isSecondScroll, f)
+		ssvalue = 1 if self.Window.independentScroll else 0
+		self.WritePreferenceItem("secondscroll", ssvalue, f)
 
-		if (width - self.Window.splicerX) < 10 :
+		if (width - self.Window.splicerX) < 10:
 			self.Window.splicerX = width / 2
 		self.WritePreferenceItem("middlebarposition", self.Window.splicerX, f)
 
 		self.WritePreferenceItem("startdepth", self.Window.rulerStartDepth, f)
 		self.WritePreferenceItem("secondstartdepth", self.Window.SPrulerStartDepth, f)
-		self.WritePreferenceItem("datawidth", self.optPanel.slider1.GetValue(), f)
+		self.WritePreferenceItem("datawidth", self.optPanel.plotWidthSlider.GetValue(), f)
 		self.WritePreferenceItem("rulerunits", self.Window.GetRulerUnitsStr(), f)
-		self.WritePreferenceItem("rulerscale", self.optPanel.slider2.GetValue(), f)
+		self.WritePreferenceItem("rulerscale", self.optPanel.depthZoomSlider.GetValue(), f)
 
-		rulerRangeStr = str(self.optPanel.min_depth.GetValue()) + " " + str(self.optPanel.max_depth.GetValue())
+		rulerRangeStr = str(self.optPanel.depthRangeMin.GetValue()) + " " + str(self.optPanel.depthRangeMax.GetValue())
 		self.WritePreferenceItem("rulerrange", rulerRangeStr, f)
 
 		self.WritePreferenceItem("tiedotsize", self.Window.tieDotSize, f)
@@ -1575,6 +1498,12 @@ class MainFrame(wx.Frame):
 
 		showSectionDepths = 1 if self.Window.showSectionDepths == True else 0
 		self.WritePreferenceItem("showSectionDepths", showSectionDepths, f)
+
+		showCoreInfo = 1 if self.Window.showCoreInfo == True else 0
+		self.WritePreferenceItem("showCoreInfo", showCoreInfo, f)
+
+		showOutOfRangeData = 1 if self.Window.showOutOfRangeData == True else 0
+		self.WritePreferenceItem("showOutOfRangeData", showOutOfRangeData, f)
 
 		showlineInt = 1 if self.Window.showHoleGrid == True else 0
 		self.WritePreferenceItem("showline", showlineInt, f)
@@ -1597,61 +1526,60 @@ class MainFrame(wx.Frame):
 		self.WritePreferenceItem("winlength", self.winLength, f)
 
 		colorStr = ""
-		for i in range(18) : 
-			colorItem = self.Window.colorList[i].Get()
-			colorStr = colorStr + str(colorItem[0]) + " " + str(colorItem[1]) + " " + str(colorItem[2]) + " "
+		for colorItem in [self.Window.colorDict[key] for key in self.Window.colorDictKeys]:
+			colorStr += str(colorItem[0]) + " " + str(colorItem[1]) + " " + str(colorItem[2]) + " "
 		self.WritePreferenceItem("colors", colorStr, f)
 
 		overlapColorStr = ""
-		for i in range(9) : 
+		for i in range(9): 
 			colorItem = self.Window.overlapcolorList[i].Get()
 			overlapColorStr = overlapColorStr + str(colorItem[0]) + " " + str(colorItem[1]) + " " + str(colorItem[2]) + " "
 		self.WritePreferenceItem("overlapcolors", overlapColorStr, f)
 
 		f.close()
 
-
-	def OnInitDataUpdate(self):
+	def OnInitDataUpdate(self, redraw=True):
 		self.UpdateCORE()
 		self.UpdateSMOOTH_CORE()
-		self.Window.UpdateDrawing()
+		if redraw:
+			self.Window.UpdateDrawing()
 		return
 
 	################################################################################################
 	# Most Correlator to Corelyzer communication routines live here - TODO: move to separate module!
 	#
 	def UndoSpliceSectionSend(self):
-		if self.client == None :
+		if self.client == None:
 			return
 
 		# recover
-		if self.spliceHoleA != None and self.spliceType != "first" :
+		if self.spliceHoleA != None and self.spliceType != "first":
 			active = False
-			for data in self.Window.SectionData :
-				if self.spliceHoleA == data[0] and self.spliceCoreA == data[1] : 
-					if active == False :
+			for data in self.Window.SectionData:
+				if self.spliceHoleA == data[0] and self.spliceCoreA == data[1]: 
+					if active == False:
 						start_depth = float(data[4])
 						end_depth = float(data[5])
-						if (self.spliceDepthA >= start_depth) and (self.spliceDepthA <= end_depth) :
+						if (self.spliceDepthA >= start_depth) and (self.spliceDepthA <= end_depth):
 							self.client.send("delete_section\t"+self.leg+"\t"+self.site+"\t"+data[0]+"\t"+data[1]+"\t"+data[2]+"\t"+data[3]+"\t"+ data[6] + "\t" + data[7] + "\n")
 							self.client.send("cut_interval_to_new_track\t"+self.leg+"\t"+self.site+"\t"+data[0]+"\t"+data[1]+"\t"+data[2]+"\t"+data[3]+"\t"+ data[6]+ "\t" + data[7] + "\tspiliced\n")
 							active = True
-					elif active == True :
+					elif active == True:
 						self.client.send("delete_section\t"+self.leg+"\t"+self.site+"\t"+data[0]+"\t"+data[1]+"\t"+data[2]+"\t"+data[3]+"\t"+ data[6] + "\t" + data[7] + "\n")
 						self.client.send("cut_interval_to_new_track\t"+self.leg+"\t"+self.site+"\t"+data[0]+"\t"+data[1]+"\t"+data[2]+"\t"+data[3]+"\t"+ data[6]+ "\t" + data[7] + "\tspiliced\n")
 						active = True
-				else :
-					if active == True :
+				else:
+					if active == True:
 						break
 		# delete
-		if self.spliceHoleB != None :
+		if self.spliceHoleB != None:
 			active = False
-			for data in self.Window.SectionData :
-				if self.spliceHoleB == data[0] and self.spliceCoreB == data[1] : 
+			for data in self.Window.SectionData:
+				if self.spliceHoleB == data[0] and self.spliceCoreB == data[1]: 
 					self.client.send("delete_section\t"+self.leg+"\t"+self.site+"\t"+data[0]+"\t"+data[1]+"\t"+data[2]+"\t"+data[3]+"\t"+ data[6] + "\t" + data[7] + "\n")
 					active = True
-				else :
-					if active == True :
+				else:
+					if active == True:
 						break
 
 		self.spliceHoleA = None 
@@ -1659,47 +1587,47 @@ class MainFrame(wx.Frame):
 
 
 	def NewDATA_SEND(self):
-		if self.client != None and self.Window.HoleData != [] :
+		if self.client != None and self.Window.HoleData != []:
 			self.client.send("delete_all\n")
 
 			filenames = self.dataFrame.OnGET_IMAGE_FILENAME()
-			for name in filenames :
+			for name in filenames:
 				cmd = "load_lims_table\t" + name + "\n"
-				#print "[DEBUG] send to Corelyzer : "  + str(cmd)
+				#print "[DEBUG] send to Corelyzer: "  + str(cmd)
 				self.client.send(cmd)
 
 			py_correlator.saveAttributeFile(self.CurrentDir + 'tmp.affine.table'  , 1)
 			cmd = "affine_table\t" + self.CurrentDir + "tmp.affine.table\n" 
-			#print "[DEBUG] send to Corelyzer : "  + str(cmd)
+			#print "[DEBUG] send to Corelyzer: "  + str(cmd)
 			self.client.send(cmd)
 
 			#ret = py_correlator.getData(18)
 			#self.ParseSectionSend(ret)
 
 	def UpdateSend(self):
-		if self.client != None :
+		if self.client != None:
 			cmd = "affine_table\t" + self.CurrentDir + "tmp.affine.table\n" 
-			#print "[DEBUG] send to Corelyzer : "  + str(cmd)
+			#print "[DEBUG] send to Corelyzer: "  + str(cmd)
 			self.client.send(cmd)
 
 	def SpliceSectionSend(self, hole, core, depth, type, tiedNo):
 		if self.client != None and tiedNo <= 0:
 			self.spliceType = type
-			if type == "split" :
+			if type == "split":
 				self.spliceHoleA = hole
 				self.spliceCoreA = core
 				self.spliceDepthA = depth 
-			else :
+			else:
 				self.spliceHoleB = hole
 				self.spliceCoreB = core
 
 			active = False
-			for data in self.Window.SectionData :
-				if hole == data[0] and core == data[1] : 
-					if active == False and type != "first" :
+			for data in self.Window.SectionData:
+				if hole == data[0] and core == data[1]: 
+					if active == False and type != "first":
 						start_depth = float(data[4])
 						end_depth = float(data[5])
-						if (type == None) and (depth <= end_depth) :
+						if (type == None) and (depth <= end_depth):
 							try:
 								temp_depth = depth * float(data[6]) / float(data[4])
 								self.client.send("cut_interval_to_new_track\t"+self.leg+"\t"+self.site+"\t"+data[0]+"\t"+data[1]+"\t"+data[2]+"\t"+data[3]+"\t"+ data[6]+ "\t" + data[7] + "\tspiliced\n")
@@ -1712,7 +1640,7 @@ class MainFrame(wx.Frame):
 								self.client.close()
 								self.client = None
 								return
-						elif (type == "split") and (depth >= start_depth) and (depth <= end_depth) :
+						elif (type == "split") and (depth >= start_depth) and (depth <= end_depth):
 							try:
 								temp_depth = depth * float(data[6]) / float(data[4])
 								self.client.send("split_section\t"+self.leg+"\t"+self.site+"\t"+data[0]+"\t"+data[1]+"\t"+data[2]+"\t"+data[3]+"\t"+data[6]+"\t"+data[7]+"\t"+str(temp_depth)+ "\t" + data[7]+"\n")
@@ -1723,12 +1651,12 @@ class MainFrame(wx.Frame):
 								self.client.close()
 								self.client = None
 								return
-					else : 
+					else: 
 						try:
-							if type != "split" :
+							if type != "split":
 								self.client.send("cut_interval_to_new_track\t"+self.leg+"\t"+self.site+"\t"+data[0]+"\t"+data[1]+"\t"+data[2]+"\t"+data[3]+"\t"+ data[6] + "\t" + data[7] + "\tspiliced\n")
 								active = True
-							else :
+							else:
 								self.client.send("delete_section\t"+self.leg+"\t"+self.site+"\t"+data[0]+"\t"+data[1]+"\t"+data[2]+"\t"+data[3]+"\t"+ data[6] + "\t" + data[7] + "\n")
 								active = True
 						except Exception, E:
@@ -1736,18 +1664,18 @@ class MainFrame(wx.Frame):
 							self.client.close()
 							self.client = None
 							return
-				else :
-					if active == True :
+				else:
+					if active == True:
 						return
-		elif self.client != None :
+		elif self.client != None:
 			active = False
-			for data in self.Window.SectionData :
-				if hole == data[0] and core == data[1] : 
-					if active == False :
+			for data in self.Window.SectionData:
+				if hole == data[0] and core == data[1]: 
+					if active == False:
 						start_depth = float(data[4])
 						end_depth = float(data[5])
-						if (type == "split") and (self.spliceDepthA >= start_depth) and (self.spliceDepthA <= end_depth) :
-							try :
+						if (type == "split") and (self.spliceDepthA >= start_depth) and (self.spliceDepthA <= end_depth):
+							try:
 								self.client.send("delete_section\t"+self.leg+"\t"+self.site+"\t"+data[0]+"\t"+data[1]+"\t"+data[2]+"\t"+data[3]+"\t"+ data[6] + "\t" + data[7] + "\n")
 
 								self.client.send("cut_interval_to_new_track\t"+self.leg+"\t"+self.site+"\t"+data[0]+"\t"+data[1]+"\t"+data[2]+"\t"+data[3]+"\t"+ data[6] + "\t" + data[7] + "\tspiliced\n")
@@ -1758,18 +1686,18 @@ class MainFrame(wx.Frame):
 								self.client.close()
 								self.client = None
 								return
-						elif type == None : 
-							if (self.spliceDepthB >= start_depth) and (self.spliceDepthB <= end_depth) :
+						elif type == None: 
+							if (self.spliceDepthB >= start_depth) and (self.spliceDepthB <= end_depth):
 								self.client.send("delete_section\t"+self.leg+"\t"+self.site+"\t"+data[0]+"\t"+data[1]+"\t"+data[2]+"\t"+data[3]+"\t"+ data[6] + "\t" + data[7] + "\n")
 
 								self.client.send("cut_interval_to_new_track\t"+self.leg+"\t"+self.site+"\t"+data[0]+"\t"+data[1]+"\t"+data[2]+"\t"+data[3]+"\t"+ data[6] + "\t" + data[7] + "\tspiliced\n")
 								#self.SpliceSectionSend(hole, core, depth, type, 1)
 								return
-							else :
+							else:
 								self.client.send("cut_interval_to_new_track\t"+self.leg+"\t"+self.site+"\t"+data[0]+"\t"+data[1]+"\t"+data[2]+"\t"+data[3]+"\t"+ data[6] + "\t" + data[7] + "\tspiliced\n")
-					else : 
-						try :
-							if type == "split" :
+					else: 
+						try:
+							if type == "split":
 								self.client.send("cut_interval_to_new_track\t"+self.leg+"\t"+self.site+"\t"+data[0]+"\t"+data[1]+"\t"+data[2]+"\t"+data[3]+"\t"+ data[6] + "\t" + data[7] + "\tspiliced\n")
 								active = True
 						except Exception, E:
@@ -1777,24 +1705,24 @@ class MainFrame(wx.Frame):
 							self.client.close()
 							self.client = None
 							return
-				else :
-					if active == True :
-						#if type == "split" :
+				else:
+					if active == True:
+						#if type == "split":
 						#	self.SpliceSectionSend(hole, core, depth, type, 1)
 						break	
 
 
 	def UndoShiftSectionSend(self):
-		if self.shiftHole != None :
+		if self.shiftHole != None:
 			self.ShiftSectionSend()
 			self.shiftHole = None 
 
 	def TieUpdateSend(self, leg, site, holeA, coreA, holeB, coreB, tie_depth, shift):
-		if self.client != None :
+		if self.client != None:
 			ret1 = self.GetSectionNoWithDepth(holeB, coreB, tie_depth)
 			# ret1 = type, section_number
 			cmd  = "tie_update\t" + str(leg) + "\t"+ str(site) + "\t" + str(holeA) + "\t" + str(coreA) + "\t" + str(leg) + "\t"+ str(site) + "\t" + str(holeB) + "\t" + str(coreB) + "\t" + str(ret1[1]) + "\t" + str(ret1[0]) + "\t" + str(tie_depth) + "\t" + str(shift) + "\n"
-			#print "[DEBUG] send to Corelyzer : " + cmd
+			#print "[DEBUG] send to Corelyzer: " + cmd
 			try:
 				self.client.send(cmd)
 			except Exception, E:
@@ -1802,15 +1730,15 @@ class MainFrame(wx.Frame):
 				self.client.close()
 				self.client = None
 			
-	def clearSend(self) :
+	def clearSend(self):
 		#def clearSend(self, leg, site, holeA, coreA, holeB, coreB, tie_depth):
-		if self.client != None :
+		if self.client != None:
 			#ret1 = self.GetSectionNoWithDepth(holeB, coreB, tie_depth)
 			#cmd  = "tie_update\t" + str(leg) + "\t"+ str(site) + "\t" + str(holeA) + "\t" + str(coreA) + "\t" + str(leg) + "\t"+ str(site) + "\t" + str(holeB) + "\t" + str(coreB) + "\t" + str(ret1[1]) + "\t" + str(ret1[0]) + "\t" + "0.0" + "\n"
-			#print "[DEBUG] send to Corelyzer : " + cmd
+			#print "[DEBUG] send to Corelyzer: " + cmd
 
 			cmd = "affine_table\t" + self.CurrentDir + "tmp.affine.table\n" 
-			#print "[DEBUG] send to Corelyzer : "  + str(cmd)
+			#print "[DEBUG] send to Corelyzer: "  + str(cmd)
 			try:
 				self.client.send(cmd)
 			except Exception, E:
@@ -1819,15 +1747,15 @@ class MainFrame(wx.Frame):
 				self.client = None
 
 	def FineTuneSend(self, leg, site, holeA, coreA, holeB, coreB, tie_depth):
-		if self.client != None :
+		if self.client != None:
 			self.Window.selectedTie = -1
 			self.Window.UpdateDrawing()
 			tune_flag = self.OnShowMessage("About", "Do you want to process find tune?", 2)
-			if tune_flag == wx.ID_OK :
+			if tune_flag == wx.ID_OK:
 				ret1 = self.GetSectionNo(holeA, coreA)
 				ret2 = self.GetSectionNo(holeB, coreB)
 				cmd  = "fine_tune\t" + str(leg) + "\t"+ str(site) + "\t" + str(holeA) + "\t" + str(coreA) + "\t" + str(ret1[1]) + "\t1\t" + str(ret1[0]) + "\t"  + str(leg) + "\t"+ str(site) + "\t" + str(holeB) + "\t" + str(coreB) + "\t" + str(ret2[1]) + "\t1\t" + str(ret2[0]) + "\t" + str(tie_depth) + "\n"
-				#print "[DEBUG] send to Corelyzer : " + cmd
+				#print "[DEBUG] send to Corelyzer: " + cmd
 				try:
 					self.client.send(cmd)
 				except Exception, E:
@@ -1840,10 +1768,10 @@ class MainFrame(wx.Frame):
 				recvdata = self.client.recv(1024)
 				start = recvdata.find('\t', 0)
 				shift = 0.0
-				if start > 0 :
+				if start > 0:
 					shift = float(recvdata[0:start])
 
-				#print "[DEBUG] got data : " + str(recvdata) + " = " + str(shift)
+				#print "[DEBUG] got data: " + str(recvdata) + " = " + str(shift)
 				hold_dlg.Close()
 				hold_dlg.Destroy()
 				self.Window.SetFocusFromKbd()
@@ -1853,21 +1781,21 @@ class MainFrame(wx.Frame):
 		
 
 	def ShowCoreSend(self, leg, site, hole, core):
-		if self.client != None :
+		if self.client != None:
 			core_Type = '-'
 			start_section = '-' 
 			end_section = '-' 
 			shift = '-'
-			for data in self.Window.SectionData :
-				if hole == data[0] and core == data[1] : 
+			for data in self.Window.SectionData:
+				if hole == data[0] and core == data[1]: 
 					core_Type = data[2] 
-					if start_section == '-' :
+					if start_section == '-':
 						start_section = data[3]
 					end_section = data[3]
 					shift = data[8]
 			msg = 'load_core\t' + leg + '\t' + site + '\t' + hole + '\t' + core + '\t' + core_Type + '\t'
 			msg += start_section + '\t' + end_section + '\t' + shift + '\n'
-			#print "[DEBUG-showCoreSend] send to Corelyzer : " + msg 
+			#print "[DEBUG-showCoreSend] send to Corelyzer: " + msg 
 
 			try:
 				self.client.send(msg)
@@ -1881,12 +1809,12 @@ class MainFrame(wx.Frame):
 		flag = False
 		idx = 0
 		type = '-'
-		for data in self.Window.SectionData :
-			if hole == data[0] and core == data[1] : 
+		for data in self.Window.SectionData:
+			if hole == data[0] and core == data[1]: 
 				flag = True 
 				idx = data[3]
 				type = data[2]
-			elif flag == True :
+			elif flag == True:
 				break
 		return idx, type
 
@@ -1896,18 +1824,18 @@ class MainFrame(wx.Frame):
 		idx = 0
 		type = '-'
 		prev_depth = 0.0
-		for data in self.Window.SectionData :
-			if hole == data[0] and core == data[1] : 
+		for data in self.Window.SectionData:
+			if hole == data[0] and core == data[1]: 
 				flag = True 
-				if depth >= prev_depth and depth < data[4] :
+				if depth >= prev_depth and depth < data[4]:
 					break
 
 				idx = data[3]
 				type = data[2]
-				if depth >= data[4] and depth <= data[5] :
+				if depth >= data[4] and depth <= data[5]:
 					break
 				prev_depth = data[5] 
-			elif flag == True :
+			elif flag == True:
 				break
 		return idx, type
 
@@ -1927,46 +1855,46 @@ class MainFrame(wx.Frame):
 
 
 	def ShiftSectionSend(self):
-		if self.client != None :
+		if self.client != None:
 			"""
 			self.shiftHole = hole
 			self.shiftCore = core
 			self.shiftOffset = -offset
 			self.shiftType = type
 			active = False
-			for data in self.Window.SectionData :
-				if hole == data[0] and core == data[1] : 
+			for data in self.Window.SectionData:
+				if hole == data[0] and core == data[1]: 
 					try:
 						cmd = "shift_section\t"+self.leg+"\t"+self.site+"\t"+data[0]+"\t"+data[1]+"\t"+data[2]+"\t"+data[3]+"\t"+ str(offset)+"\n"
 						self.client.send(cmd)
-						#print "[DEBUG] send to Corelyzer : " + cmd
+						#print "[DEBUG] send to Corelyzer: " + cmd
 						active = True
 					except Exception, E:
 						print "[DEBUG] Disconnect to the corelyzer"
 						self.client.close()
 						self.client = None
 						return
-				else :
-					if active == True :
-						if type == 2 :
+				else:
+					if active == True:
+						if type == 2:
 							return
-						else :
-							if hole == data[0] :
+						else:
+							if hole == data[0]:
 								try:
 									cmd = "shift_section\t"+self.leg+"\t"+self.site+"\t"+data[0]+"\t"+data[1]+"\t"+data[2]+"\t"+data[3]+"\t"+ str(offset)+"\n"
 									self.client.send(cmd)
-									#print "[DEBUG] send to Corelyzer : " + cmd
+									#print "[DEBUG] send to Corelyzer: " + cmd
 								except Exception, E:
 									print "[DEBUG] Disconnect to the corelyzer"
 									self.client.close()
 									self.client = None
 									return
-							else :
+							else:
 								return
 			"""
 
 			cmd = "affine_table\t" + self.CurrentDir + "tmp.affine.table\n" 
-			#print "[DEBUG] send to Corelyzer : "  + str(cmd)
+			#print "[DEBUG] send to Corelyzer: "  + str(cmd)
 			self.client.send(cmd)
 	###
 	### End (most) Correlator to Corelyzer communication methods
@@ -1999,19 +1927,19 @@ class MainFrame(wx.Frame):
 
 		while True:
 			last = data.find("@", start)
-			if start == last :
+			if start == last:
 				start = last + 1
 				last = data.find(",", start)
 				shift = data[start:last] 
 				start = last + 1
 
 			last = data.find(":", start)
-			if start == last :
+			if start == last:
 				start = last + 1
 				last = data.find("#", start)
-				if start == last :
+				if start == last:
 					break
-				else :
+				else:
 					# site 
 					last = data.find(",", start)
 					site = data[start:last] 
@@ -2054,15 +1982,15 @@ class MainFrame(wx.Frame):
 			bottom = data[start:last]
 			start = last +1
 
-			if hole != prevHole or core != prevCore :
-				if startSecNo == "-" :
+			if hole != prevHole or core != prevCore:
+				if startSecNo == "-":
 					startSecNo = secNo
-				else :
+				else:
 					startSecNo = secNo
 					secInfo_modified = (secInfo[0], secInfo[1], secInfo[2], secInfo[3], secInfo[4], secInfo[5], secInfo[6], secInfo[7], shift)
 					self.Window.SectionData.append(secInfo_modified)
-			else :
-				if secInfo != None :
+			else:
+				if secInfo != None:
 					self.Window.SectionData.append(secInfo)
 
 			secInfo = (hole, core, type, secNo, depth_start, depth_end, top, bottom, '-')
@@ -2073,8 +2001,8 @@ class MainFrame(wx.Frame):
 			prevSecNo = secNo
 
 
-		if startSecNo != "-" :
-			if secInfo != None :
+		if startSecNo != "-":
+			if secInfo != None:
 				secInfo_modified = (secInfo[0], secInfo[1], secInfo[2], secInfo[3], secInfo[4], secInfo[5], secInfo[6], secInfo[7], shift)
 				self.Window.SectionData.append(secInfo_modified)
 
@@ -2095,7 +2023,7 @@ class MainFrame(wx.Frame):
 		type = data[start:last]
 		start = last +1
 		self.CoreNo = 0 
-		if type == "GRA" :
+		if type == "GRA":
 			type = "Bulk Density(GRA)"
 
 		# brg 11/18/2015: top and bottom are actually min/max section offset for the hole,
@@ -2103,29 +2031,19 @@ class MainFrame(wx.Frame):
 		# top, bottom, min, max, 
 		# 4 times
 		temp =[]
-		for i in range(4) :
+		for i in range(4):
 			last = data.find(",", start)
 			temp.append(float(data[start:last])) 
 			start = last +1
 
-		if self.min > temp[2] :
+		if self.min > temp[2]:
 			self.min = temp[2]
-		if self.max < temp[3] :
+		if self.max < temp[3]:
 			self.max = temp[3]
 
 		# hole-name
 		last = data.find(",", start)
 		holename = data[start:last] 
-
-		# register Hole and Type
-		if self.PrevDataType != type and self.LOCK == 0 : 
-			self.filterPanel.OnRegisterHole("All " + type)
-			#if self.noOfHoles != 0 and self.filterPanel.locked == False :
-			#	self.noOfSameTypeHoles = self.noOfHoles - self.noOfSameTypeHoles
-			#	for n in range(self.noOfSameTypeHoles) : 
-			#		self.Window.OnChangeHoleRange(self.min, self.max)
-			#	self.min = 999
-			#	self.max = -999
 
 		# BLOCKED DETAILED TYPE  
 		#regHole = type + " Hole " + holename
@@ -2139,8 +2057,8 @@ class MainFrame(wx.Frame):
 		start = last +1
 
 		last = data.find("#", start)
-		if start != last :
-			for i in range(coreNum) :
+		if start != last:
+			for i in range(coreNum):
 				self.ParseCore(start, last, hole, holename, data)
 				start = self.CoreStart
 				last = self.CoreLast 
@@ -2151,7 +2069,7 @@ class MainFrame(wx.Frame):
 			temp =[]
 			temp.append(hole)
 			output.append( temp )
-		else :
+		else:
 			self.CoreStart = start
 			self.CoreLast = last
 
@@ -2166,7 +2084,7 @@ class MainFrame(wx.Frame):
 		start = last +1
 
 		last = data.find(":", start)
-		if start == last :
+		if start == last:
 			start = last + 1
 			self.CoreStart = start
 			self.CoreLast = last
@@ -2178,7 +2096,7 @@ class MainFrame(wx.Frame):
 		#affineStr = "affine shift of {}".format(affineShift)
 		#print "Getting data...AffineManager sez {}{} has {}".format(holename, coreNum, affineStr)
 
-		#for i in range(6) :
+		#for i in range(6):
 		# I believe 'squish' is the compression percentage for ELD 
 		for key in ['coreTop', 'coreBottom', 'coreMin', 'coreMax', 'affineShift', 'squish']:
 			last = data.find(",", start)
@@ -2207,7 +2125,7 @@ class MainFrame(wx.Frame):
 		# Get Section Information
 		last = data.find(":", start)
 		sections = []
-		while start != last : 
+		while start != last: 
 			last = data.find(",", start)
 			sec_depth = float(data[start:last]) + affineShift # apply affine
 			start = last +1
@@ -2220,11 +2138,11 @@ class MainFrame(wx.Frame):
 
 		# Get Data
 		last = data.find(":", start)
-		if start == last :
+		if start == last:
 			start = last + 1
 			self.CoreStart = start
 			self.CoreLast = last
-		else : 
+		else: 
 			while True:
 				last = data.find(",", start)
 				v_value = float(data[start:last]) + affineShift # apply affine
@@ -2234,7 +2152,7 @@ class MainFrame(wx.Frame):
 				start = last +1
 				corelist.append((v_value, v_data))
 				last = data.find(":", start)
-				if start == last :
+				if start == last:
 					# Create a "core data" item, which looks like the following: 
 					# (1-based core index in hole, top, bottom, mindata, maxdata, affine offset, stretch, annotated type,
 					# core quality, sections (list of each sections' top depth), list of all core's depth/data tuple-pairs
@@ -2247,9 +2165,9 @@ class MainFrame(wx.Frame):
 					break
 
 	def ParseData(self, data, output):
-		if data != "" :
+		if data != "":
 			self.noOfSameTypeHoles = 0
-			if self.filterPanel.locked == False :
+			if self.filterPanel.locked == False:
 				self.noOfHoles = 0
 
 			self.min = 9999.99 
@@ -2268,18 +2186,18 @@ class MainFrame(wx.Frame):
 
 			while True:
 				self.ParseHole(start, last, data, output)
-				if self.filterPanel.locked == False :
+				if self.filterPanel.locked == False:
 					self.noOfHoles = self.noOfHoles + 1
 				start = self.CoreStart
 				last = self.CoreLast 
 				last = data.find("#", start)
-				if start == last :
+				if start == last:
 					break
 
-			#if self.LOCK == 0 :
-			#	if self.noOfHoles != 0 and self.filterPanel.locked == False :
+			#if self.LOCK == 0:
+			#	if self.noOfHoles != 0 and self.filterPanel.locked == False:
 			#		self.noOfSameTypeHoles = self.noOfHoles - self.noOfSameTypeHoles
-			#		for n in range(self.noOfSameTypeHoles) :
+			#		for n in range(self.noOfSameTypeHoles):
 			#			self.Window.OnChangeHoleRange(self.min, self.max)
 			#	self.min = 999
 			#	self.max = -999
@@ -2293,15 +2211,15 @@ class MainFrame(wx.Frame):
 		#self.Window.minRange = self.min 
 		return 
 		self.Window.maxRange = self.max 
-		if (self.max - self.min) != 0 :
+		if (self.max - self.min) != 0:
 			self.Window.coefRange = self.Window.holeWidth / (self.Window.maxRange - self.Window.minRange)
 
 	def ParseSaganData(self, data):
-		if data != "" :
+		if data != "":
 			start =0
 			last =0
 			last = data.find("#", start)
-			if start == last :
+			if start == last:
 				return	
 
 			tie_list = [] 
@@ -2349,13 +2267,13 @@ class MainFrame(wx.Frame):
 				# setup SaganData
 				tie_list.append( (id, holeA, coreA, holeB, coreB, depthA, depthB) )
 				last = data.find("#", start)
-				if start == last :
+				if start == last:
 					break
 			self.Window.SetSaganFromFile(tie_list)
 
 
 	def ParseTieData(self, data, data_list):
-		if data != "" :
+		if data != "":
 			start =0
 			last =0
 
@@ -2368,7 +2286,7 @@ class MainFrame(wx.Frame):
 
 				while True:
 					last = data.find(":", start)
-					if start == last :
+					if start == last:
 						start = last +1
 						break
 
@@ -2385,12 +2303,12 @@ class MainFrame(wx.Frame):
 				data_list.append( (hole_idx, l) )
 
 				last = data.find("#", start)
-				if start == last :
+				if start == last:
 					break
 
 
 	def ParseShiftTieData(self, data, data_list):
-		if data != "" :
+		if data != "":
 			start =0
 			last =0
 
@@ -2404,7 +2322,7 @@ class MainFrame(wx.Frame):
 				hole_name = None
 				while True:
 					last = data.find(":", start)
-					if start == last :
+					if start == last:
 						start = last +1
 						break
 
@@ -2427,21 +2345,21 @@ class MainFrame(wx.Frame):
 					start = last +1
 					l.append(x)
 
-				if hole_name != None :
+				if hole_name != None:
 					data_list.append( (hole_index, hole_name, l) )
 
 				last = data.find("#", start)
-				if start == last :
+				if start == last:
 					break
 
 
 	def ParseSpliceData(self, data, flag):
-		if data != "" :
+		if data != "":
 			self.Window.SpliceCore = []
 			start =0
 			last =0
 			last = data.find("#", start)
-			if start == last :
+			if start == last:
 				return	
 
 			tie_list = [] 
@@ -2459,20 +2377,20 @@ class MainFrame(wx.Frame):
 				last = data.find(",", start)
 				annotation = ""
 				strtypeA = ""
-				if start != last :
+				if start != last:
 					annotation = data[start:last]
 				start = last +1
-				if type == 30 :
+				if type == 30:
 					strtypeA = "GRA"
-				elif type == 31 :
+				elif type == 31:
 					strtypeA = "Pwave"
-				elif type == 32 :
+				elif type == 32:
 					strtypeA = "Susceptibility"
-				elif type == 33 :
+				elif type == 33:
 					strtypeA = "Natural Gamma"
-				elif type == 34 :
+				elif type == 34:
 					strtypeA = "Reflectance"
-				elif type == 37 :
+				elif type == 37:
 					strtypeA = annotation
 				last = data.find(",", start)
 				holeA = data[start:last]
@@ -2491,20 +2409,20 @@ class MainFrame(wx.Frame):
 				last = data.find(",", start)
 				annotation = ""
 				strtypeB = ""
-				if start != last :
+				if start != last:
 					annotation = data[start:last]
 				start = last +1
-				if type == 30 :
+				if type == 30:
 					strtypeB = "GRA"
-				elif type == 31 :
+				elif type == 31:
 					strtypeB = "Pwave"
-				elif type == 32 :
+				elif type == 32:
 					strtypeB = "Susceptibility"
-				elif type == 33 :
+				elif type == 33:
 					strtypeB = "Natural Gamma"
-				elif type == 34 :
+				elif type == 34:
 					strtypeB = "Reflectance"
-				elif type == 37 :
+				elif type == 37:
 					strtypeB = annotation
 				last = data.find(",", start)
 				holeB = data[start:last]
@@ -2520,7 +2438,7 @@ class MainFrame(wx.Frame):
 				# setup SpliceData
 				tie_list.append( (id, strtypeA, holeA, coreA, strtypeB, holeB, coreB, depthA, depthB) )
 				last = data.find("#", start)
-				if start == last :
+				if start == last:
 					break
 			self.Window.SetSpliceFromFile(tie_list, flag)
 
@@ -2529,11 +2447,11 @@ class MainFrame(wx.Frame):
 		self.Window.UpdateDrawing()
 
 	def ShowDataManager(self):
-		if self.CHECK_CHANGES() == True :
+		if self.UnsavedChanges() == True:
 			ret = self.OnShowMessage("About", "Do you want to save?", 0)
 			if ret == wx.ID_YES:
 				self.topMenu.OnSAVE(None) # dummy event
-		if self.dataFrame.IsShown() == False :
+		if self.dataFrame.IsShown() == False:
 			self.Window.Hide()
 			self.dataFrame.Show(True)
 			#self.midata.Check(True)
@@ -2541,6 +2459,14 @@ class MainFrame(wx.Frame):
 		self.Layout()
 
 	def ShowDisplay(self):
+		if self.dataFrame.needsReload:
+			msg = "The Enable/Disable state of files was changed. " \
+				"To apply these changes, select Load from the right-click menu.\n\n" \
+				"Continue to the Display?"
+			self.dataFrame.needsReload = False # warn only once
+			if self.OnShowMessage("Data Manager Change(s) Detected", msg, 0, makeNoDefault=True) != wx.ID_YES:
+				return
+
 		self.dataFrame.propertyIdx = None
 		self.dataFrame.Show(False)
 
@@ -2558,17 +2484,17 @@ class MainFrame(wx.Frame):
 	def TypeStrToInt(self, typeStr):
 		type = 7 # custom type
 		annot = ""
-		if typeStr == "Bulk Density(GRA)" :
+		if typeStr == "Bulk Density(GRA)":
 			type = 1 
 		elif typeStr.lower() == "pwave": # expecting 'Pwave' or 'PWave'
 			type = 2 
-		elif typeStr == "Susceptibility" :
+		elif typeStr == "Susceptibility":
 			type = 3 
-		elif typeStr.replace(' ', '') == "NaturalGamma" : # expecting 'Natural Gamma' or 'NaturalGamma'
+		elif typeStr.replace(' ', '') == "NaturalGamma": # expecting 'Natural Gamma' or 'NaturalGamma'
 			type = 4 
-		elif typeStr == "Reflectance" :
+		elif typeStr == "Reflectance":
 			type = 5 
-		elif typeStr == "Other" :
+		elif typeStr == "Other":
 			type = 6
 		else:
 			annot = typeStr
@@ -2579,15 +2505,15 @@ class MainFrame(wx.Frame):
 	def TypeStrToFileSuffix(self, typeStr, useExportSuffix=False):
 		suffix = "adj" if useExportSuffix else "fix"
 		result = ""
-		if typeStr == "Bulk Density(GRA)" :
+		if typeStr == "Bulk Density(GRA)":
 			result = "gr" + suffix
-		elif typeStr.lower() == "pwave" :
+		elif typeStr.lower() == "pwave":
 			result = "pw" + suffix
-		elif typeStr == "Susceptibility" :
+		elif typeStr == "Susceptibility":
 			suffix = "sus" + suffix
-		elif typeStr.replace('  ', '') == "NaturalGamma" :
+		elif typeStr.replace('  ', '') == "NaturalGamma":
 			result = "ng" + suffix
-		elif typeStr == "Reflectance" :
+		elif typeStr == "Reflectance":
 			result = "refl" + suffix
 		# 1/20/2014 brgtodo: May not be correct for export case...previous code
 		# ignored the possibility of an Other type being passed in. However, this
@@ -2614,15 +2540,15 @@ class MainFrame(wx.Frame):
 		#self.Width, self.Height = self.GetClientSizeTuple()
 		if self.config.has_option("applications", "width"):
 			str_temp =  self.config.get("applications", "width")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				self.Width = int ( str_temp )
 		if self.config.has_option("applications", "height"):
 			str_temp =  self.config.get("applications", "height")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				self.Height = int ( str_temp )
-		if self.Width <= 0 :
+		if self.Width <= 0:
 			self.Width = 800
-		if self.Height <= 0 :
+		if self.Height <= 0:
 			self.Height = 600
 
 		self.SetClientSize((self.Width, self.Height))
@@ -2642,23 +2568,30 @@ class MainFrame(wx.Frame):
 		win_y = 0
 		if self.config.has_option("applications", "winx"):
 			str_temp = self.config.get("applications", "winx")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				win_x = int ( str_temp )
 		if self.config.has_option("applications", "winy"):
 			str_temp = self.config.get("applications", "winy")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				win_y = int ( str_temp )
-			#if win_y == 0 :
+			#if win_y == 0:
 			#	win_y = 100
 
-		if platform_name[0] != "Windows" and win_y == 0 :
-			if win_x < 800 :
+		if platform_name[0] != "Windows" and win_y == 0:
+			if win_x < 800:
 				win_y = 50
 
-		#print "[DEBUG] Window Position :" + str(win_x) + " " + str(win_y)
+		#print "[DEBUG] Window Position:" + str(win_x) + " " + str(win_y)
 
+		# 1/8/2019 brg: Logic to handle multiple displays, hook up once we have
+		# SplashScreen opening after prefs loading (as MainFrame is)
+		# so it too can be placed in the appropriate display (currently always opens
+		# in primary display).
+		# displays = [wx.Display(didx) for didx in range(wx.Display.GetCount())]
+		# display_width = sum([disp.GetGeometry().GetWidth() for disp in displays])
+		# display_height = sum([disp.GetGeometry().GetHeight() for disp in displays])
 		display_x, display_y = wx.DisplaySize()
-		if (win_x > display_x) or (win_y > display_y) : 
+		if (win_x > display_x) or (win_y > display_y):
 			win_x = 0
 			win_y = 23 
 
@@ -2667,9 +2600,9 @@ class MainFrame(wx.Frame):
 # 		win_width = self.Width
 # 		win_height = self.Height
 # 		#print "[DEBUG] Window Width = " + str(win_width) + " " + str(win_height)
-# 		if sys.platform != 'win32' :
+# 		if sys.platform != 'win32':
 # 			win_height = self.Height + 40
-# 		else :
+# 		else:
 # 			win_width = win_width + 8
 # 			win_height = self.Height + 76
 		
@@ -2681,35 +2614,35 @@ class MainFrame(wx.Frame):
 
 		#if self.config.has_option("applications", "middlebarposition"):
 		#	str_temp =  self.config.get("applications", "middlebarposition")
-		#	if len(str_temp) > 0 :
+		#	if len(str_temp) > 0:
 		#		conf_value = int ( str_temp ) 
-		#		if conf_value > (display_x -340) :
+		#		if conf_value > (display_x -340):
 		#			conf_value = display_x - 340
 		#		self.Window.splicerX = conf_value
-		#if self.Window.splicerX  < 150 :
+		#if self.Window.splicerX  < 150:
 		#	self.Window.splicerX = 180
 
 		#if self.config.has_option("applications", "startdepth"):
 		#	str_temp = self.config.get("applications", "startdepth")
-		#	if len(str_temp) > 0 :
+		#	if len(str_temp) > 0:
 		#		conf_value = float ( str_temp )
 		#		self.Window.rulerStartDepth = conf_value 
 
 		if self.config.has_option("applications", "tiedotsize"):
 			str_temp = self.config.get("applications", "tiedotsize")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				conf_value = int ( str_temp )
 				self.Window.tieDotSize = conf_value 
 
 		if self.config.has_option("applications", "tiewidth"):
 			str_temp = self.config.get("applications", "tiewidth")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				conf_value = int ( str_temp )
 				self.Window.tieline_width = conf_value 
 
 		#if self.config.has_option("applications", "secondstartdepth"):
 		#	str_temp = self.config.get("applications", "secondstartdepth")
-		#	if len(str_temp) > 0 :
+		#	if len(str_temp) > 0:
 		#		conf_value = float ( str_temp )
 		#		self.Window.SPrulerStartDepth = conf_value 
 
@@ -2723,35 +2656,35 @@ class MainFrame(wx.Frame):
 
 		if self.config.has_option("applications", "rulerrange"):
 			conf_str = self.config.get("applications", "rulerrange")
-			if len(conf_str) > 0 :
+			if len(conf_str) > 0:
 				conf_array = conf_str.split()
-				self.optPanel.min_depth.SetValue(conf_array[0])
-				self.optPanel.max_depth.SetValue(conf_array[1])
+				self.optPanel.depthRangeMin.SetValue(conf_array[0])
+				self.optPanel.depthRangeMax.SetValue(conf_array[1])
 				self.optPanel.OnDepthViewAdjust(None)
 
 		if self.config.has_option("applications", "rulerscale"):
 			str_temp = self.config.get("applications", "rulerscale")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				conf_value = int ( str_temp )
-				self.optPanel.slider2.SetValue(conf_value)
+				self.optPanel.depthZoomSlider.SetValue(conf_value)
 				self.optPanel.OnRulerOneScale(None)
 
 		if self.config.has_option("applications", "shiftrange"):
 			str_temp = self.config.get("applications", "shiftrange")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				conf_value = float ( str_temp )
 				self.optPanel.tie_shift.SetValue(str_temp)
 				self.optPanel.OnTieShiftScale(None)
 
 		if self.config.has_option("applications", "splicewindow"):
 			str_temp = self.config.get("applications", "splicewindow")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				conf_value = int ( str_temp )
-			if conf_value == 0 :
+			if conf_value == 0:
 				self.Window.spliceWindowOn = 1 
 				self.OnActivateWindow(1)
 				self.misecond.Check(False)
-			else : 
+			else: 
 				self.Window.spliceWindowOn = 0 
 				self.OnActivateWindow(0)
 				self.misecond.Check(True)
@@ -2759,32 +2692,33 @@ class MainFrame(wx.Frame):
 		conf_value = 0
 		if self.config.has_option("applications", "secondscroll"):
 			str_temp = self.config.get("applications", "secondscroll")
-			if len(str_temp) > 0 :
-				conf_value = int ( str_temp )
-			if conf_value == 0:
-				self.Window.isSecondScroll = 0 
-				self.optPanel.opt2.SetValue(False)
-			else :
-				self.Window.isSecondScroll =1 
-				self.optPanel.opt2.SetValue(True)
+			if len(str_temp) > 0:
+				conf_value = int(str_temp)
+			# if conf_value == 0:
+			# 	self.SetIndependentScroll(False)
+			# else:
+			# 	self.SetIndependentScroll(True)
 
 		if self.config.has_option("applications", "colors"):
 			conf_str = self.config.get("applications", "colors") 
-			if len(conf_str) > 0 :
-				conf_array = conf_str.split()
-				self.Window.colorList = []
-				for i in range(18) :
-					r = int(conf_array[i*3])
-					g = int(conf_array[i*3+1]) 
-					b = int(conf_array[i*3+2]) 
-					self.Window.colorList.insert(i, wx.Colour(r, g, b))
+			if len(conf_str) > 0:
+				# saved color string is of form "R0 G0 B0 R1 G1 B1...". Order corresponds to
+				# self.Window.colorDictKeys, so 'mbsf' color is (R0, G0, B0), 'ccsfTie'
+				# is (R1, G1, B1), and so on.
+				rgbs = conf_str.split()
+				if len(rgbs) % 3 != 0 or len(rgbs) % len(self.Window.colorDictKeys):
+					print("Expected {} saved color components, found {}, using defaults.".format(3 * len(self.Window.colorDictKeys), len(rgbs)))
+				else:
+					for index, key in enumerate(self.Window.colorDictKeys):
+						color = wx.Colour(int(rgbs[index * 3]), int(rgbs[index * 3 + 1]), int(rgbs[index * 3 + 2]))
+						self.Window.colorDict[key] = color
 
 		if self.config.has_option("applications", "overlapcolors"):
 			conf_str = self.config.get("applications", "overlapcolors") 
-			if len(conf_str) > 0 :
+			if len(conf_str) > 0:
 				conf_array = conf_str.split()
 				self.Window.overlapcolorList = []
-				for i in range(9) :
+				for i in range(9):
 					r = int(conf_array[i*3])
 					g = int(conf_array[i*3+1]) 
 					b = int(conf_array[i*3+2]) 
@@ -2793,74 +2727,86 @@ class MainFrame(wx.Frame):
 		# see 11/2/2013 brg
 		#if self.config.has_option("applications", "fontsize"):
 		#	str_temp = self.config.get("applications", "fontsize")
-		#	if len(str_temp) > 0 :
+		#	if len(str_temp) > 0:
 		#		conf_value = int ( str_temp )
 		#		self.Window.stdFont.SetPointSize(conf_value)
 			
 		if self.config.has_option("applications", "fontstartdepth"):
 			str_temp = self.config.get("applications", "fontstartdepth")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				conf_value = float ( str_temp )			
 				self.Window.startDepth = conf_value
 				self.Window.startAgeDepth = conf_value
 		
 		if self.config.has_option("applications", "showline"):
 			str_temp = self.config.get("applications", "showline")
-			if len(str_temp) > 0 :
-				if str_temp == "1" :
+			if len(str_temp) > 0:
+				if str_temp == "1":
 					self.Window.showHoleGrid = True 
-					self.optPanel.opt3.SetValue(True)
-				else :
+					self.optPanel.showPlotLines.SetValue(True)
+				else:
 					self.Window.showHoleGrid = False 
-					self.optPanel.opt3.SetValue(False)
+					self.optPanel.showPlotLines.SetValue(False)
 
 		if self.config.has_option("applications", "showSectionDepths"):
 			str_temp = self.config.get("applications", "showSectionDepths")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				self.Window.showSectionDepths = True if str_temp == '1' else False 
 				self.optPanel.showSectionDepths.SetValue(self.Window.showSectionDepths)
 
 		if self.config.has_option("applications", "showAffineShiftInfo"):
 			str_temp = self.config.get("applications", "showAffineShiftInfo")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				self.Window.showAffineShiftInfo = True if str_temp == '1' else False 
 				self.optPanel.showAffineShiftInfo.SetValue(self.Window.showAffineShiftInfo)
 
 		if self.config.has_option("applications", "showAffineTieArrows"):
 			str_temp = self.config.get("applications", "showAffineTieArrows")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				self.Window.showAffineTieArrows = True if str_temp == '1' else False 
 				self.optPanel.showAffineTieArrows.SetValue(self.Window.showAffineTieArrows)
 
+		if self.config.has_option("applications", "showCoreInfo"):
+			str_temp = self.config.get("applications", "showCoreInfo")
+			if len(str_temp) > 0:
+				self.Window.showCoreInfo = True if str_temp == '1' else False 
+				self.optPanel.showCoreInfo.SetValue(self.Window.showCoreInfo)
+
+		if self.config.has_option("applications", "showOutOfRangeData"):
+			str_temp = self.config.get("applications", "showOutOfRangeData")
+			if len(str_temp) > 0:
+				self.Window.showOutOfRangeData = True if str_temp == '1' else False 
+				self.optPanel.showOutOfRangeData.SetValue(self.Window.showOutOfRangeData)
+
 		if self.config.has_option("applications", "scrollsize"):
 			str_temp = self.config.get("applications", "scrollsize")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				conf_value = int ( str_temp )
 				self.Window.ScrollSize = conf_value
 
 		if self.config.has_option("applications", "discreteplotmode"):
 			str_temp = self.config.get("applications", "discreteplotmode")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				conf_value = int ( str_temp )
 				self.Window.DiscretePlotMode = conf_value
-				if conf_value == 1 :
+				if conf_value == 1:
 					self.miplot.Check(True)
 			
 		if self.config.has_option("applications", "toolbar"):
 			conf_str = self.config.get("applications", "toolbar")
-			if len(conf_str) > 0 :
+			if len(conf_str) > 0:
 				conf_array = conf_str.split()
 				x = int(conf_array[0])
 				y = int(conf_array[1])
-				if x >= display_x :
+				if x >= display_x:
 					x = 300
-				if y >= display_y :
+				if y >= display_y:
 					y = 200
 				self.topMenu.SetPosition((x, y))
 			
 		#if self.config.has_option("applications", "startup"):
 		#	conf_str = self.config.get("applications", "startup")
-		#	if conf_str == "False" :
+		#	if conf_str == "False":
 		#		self.dataFrame.startupbtn.SetValue(False)
 		#		self.dataFrame.startup = 0 
 		#		self.midata.Check(False)
@@ -2875,72 +2821,72 @@ class MainFrame(wx.Frame):
 
 		if self.config.has_option("applications", "leadlag"):
 			str_temp = self.config.get("applications", "leadlag")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				self.leadLag = float(str_temp)
 
 		if self.config.has_option("applications", "middlebarposition"):
 			str_temp =  self.config.get("applications", "middlebarposition")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				conf_value = int ( str_temp ) 
-				if conf_value > (display_x -340) :
+				if conf_value > (display_x -340):
 					conf_value = display_x - 340
 				self.Window.splicerX = conf_value
-		if self.Window.splicerX  < 150 :
+		if self.Window.splicerX  < 150:
 			self.Window.splicerX = 180
 
 		if self.config.has_option("applications", "startdepth"):
 			str_temp = self.config.get("applications", "startdepth")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				conf_value = float ( str_temp )
 				self.Window.rulerStartDepth = conf_value 
 
 		if self.config.has_option("applications", "secondstartdepth"):
 			str_temp = self.config.get("applications", "secondstartdepth")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				conf_value = float ( str_temp )
 				self.Window.SPrulerStartDepth = conf_value 
 
 		if self.config.has_option("applications", "winlength"):
 			str_temp = self.config.get("applications", "winLength")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				self.winLength = float(str_temp)
 
 		self.OnUpdateGraphSetup(1)
 		self.OnUpdateGraphSetup(2)
 		self.OnUpdateGraphSetup(3)
 
-		if new_flag == False :
+		if new_flag == False:
 			if self.config.has_option("applications", "dbpath"):
 				str_temp = self.config.get("applications", "dbpath")
-				if len(str_temp) > 0 :
-					if os.access(str_temp, os.F_OK) == True :
+				if len(str_temp) > 0:
+					if os.access(str_temp, os.F_OK) == True:
 						str_len =  len(str_temp) -1
 						self.DBPath = str_temp
-						if platform_name[0] == "Windows" :
-							if str_temp[str_len] != "\\" :
+						if platform_name[0] == "Windows":
+							if str_temp[str_len] != "\\":
 								self.DBPath = str_temp + "\\"
-						else :
-							if str_temp[str_len] != "/" :
+						else:
+							if str_temp[str_len] != "/":
 								self.DBPath = str_temp + "/"
-						self.dataFrame.PathTxt.SetValue("Path : " + self.DBPath)
-					else :
+						self.dataFrame.PathTxt.SetValue("Path: " + self.DBPath)
+					else:
 						self.DBPath = myPath
-						self.dataFrame.PathTxt.SetValue("Path : " + self.DBPath)
-		else :
+						self.dataFrame.PathTxt.SetValue("Path: " + self.DBPath)
+		else:
 			self.DBPath = myPath
-			self.dataFrame.PathTxt.SetValue("Path : " + self.DBPath)
+			self.dataFrame.PathTxt.SetValue("Path: " + self.DBPath)
 
 
-		if self.DBPath == "-" :
+		if self.DBPath == "-":
 			self.DBPath = User_Dir  + "/Documents/Correlator/" + vers.BaseVersion  + "/"
-			if platform_name[0] == "Windows" :
+			if platform_name[0] == "Windows":
 				self.DBPath =  User_Dir  + "\\Correlator\\" + vers.BaseVersion + "\\"
-			self.dataFrame.PathTxt.SetValue("Path : " + self.DBPath)
+			self.dataFrame.PathTxt.SetValue("Path: " + self.DBPath)
 			
-			if os.access(self.DBPath, os.F_OK) == False :
+			if os.access(self.DBPath, os.F_OK) == False:
 				os.mkdir(self.DBPath)
 			prefile = self.DBPath + "db"
-			if os.access(prefile, os.F_OK) == False :
+			if os.access(prefile, os.F_OK) == False:
 				os.mkdir(prefile)
 			#print "[DEBUG] " + prefile + " is created"
 
@@ -2961,29 +2907,29 @@ class MainFrame(wx.Frame):
 			conf_str = self.config.get("applications", "data")
 			conf_array = conf_str.split()
 			# HYEJUNG DB
-			#if (self.dataFrame.listPanel.GetCellValue(0, 0) != '') and (len(conf_array) > 0) :
-			#	if conf_array[0] != "-1" :
+			#if (self.dataFrame.listPanel.GetCellValue(0, 0) != '') and (len(conf_array) > 0):
+			#	if conf_array[0] != "-1":
 			#		for data in conf_array:
 			#			self.dataFrame.listPanel.SelectRow(int(data), True)
 			#		self.CurrentDataNo = int(conf_array[0]) 
 			#		data_loaded = self.dataFrame.OnLOAD(1)
 					
 			#self.CurrentDataNo = conf_value
-			#if conf_value >= 0 :
+			#if conf_value >= 0:
 			#	self.dataFrame.listPanel.SelectRow(conf_value)
 			#	data_loaded = self.dataFrame.OnLOAD(1)
 
 
 		if self.config.has_option("applications", "path"):
 			str_temp = self.config.get("applications", "path")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				self.Directory = str_temp
 
 		if self.config.has_option("applications", "datawidth"):
 			str_temp = self.config.get("applications", "datawidth")
-			if len(str_temp) > 0 :
+			if len(str_temp) > 0:
 				conf_value = int ( str_temp )
-				self.optPanel.slider1.SetValue(conf_value)
+				self.optPanel.plotWidthSlider.SetValue(conf_value)
 				self.optPanel.OnChangeWidth(None)
 
 		img = wx.Image(opj("images/scrollbutton1.jpg"))
@@ -3014,7 +2960,7 @@ class MainFrame(wx.Frame):
 		bmp = img.ConvertToBitmap()		
 		DrawData["MovableInterface"] = (bmp, self.half, scroll_start)
 
-		if self.ScrollMax != 0 :
+		if self.ScrollMax != 0:
 			self.Window.UpdateScroll(1)
 			self.Window.UpdateScroll(2)
 			self.Window.ScrollUpdate = 1
@@ -3028,14 +2974,19 @@ class AffineController:
 		self.affine = AffineBuilder() # AffineBuilder for current affine table
 		self.undoStack = [] # track previous AffineBuilder states for undo
 		self.dirty = False # has affine state changed since last save?
+		self.currentAffineFile = None # most-recently loaded or saved affine file (if any)
 	
-	# remove all shifts
+	# remove all shifts, re-init state members
 	def clear(self):
 		self.affine.clear()
+		self.undoStack = []
+		self.dirty = False
+		self.currentAffineFile = None
 		
 	def load(self, filepath):
 		if filepath is not None:
 			self.affine = AffineBuilder.createWithAffineFile(filepath, self.parent.sectionSummary)
+			self.currentAffineFile = filepath
 		else:
 			self.affine = AffineBuilder.createWithSectionSummary(self.parent.sectionSummary)
 		
@@ -3046,6 +2997,11 @@ class AffineController:
 			previousOffset = None
 			for curShift in [s for s in shifts if s.core.hole == hole]:
 				site = self.parent.Window.GetHoleSite(hole)
+				if not site:
+					# If data for hole isn't loaded, grab site from section summary.
+					# We assume a single site is loaded at a time in Correlator.
+					ssSites = self.parent.sectionSummary.getSites()
+					site = list(ssSites)[0]
 				coreType = self.parent.sectionSummary.getCoreType(site, hole, curShift.core.core)
 				csf, dummy = self.parent.sectionSummary.getCoreRange(site, hole, curShift.core.core)
 				csf = round(csf, 3)
@@ -3063,17 +3019,18 @@ class AffineController:
 					shiftedTieCsf = curShift.depth
 					fixedCore = curShift.fromCore.GetHoleCoreStr()
 				
-				series = pandas.Series({'Site':site, 'Hole':hole, 'Core':curShift.core.core, 'Core Type':coreType, \
-										'Depth CSF (m)':csf, 'Depth CCSF (m)':ccsf, 'Cumulative Offset (m)':round(cumOff,3), \
-										'Differential Offset (m)':round(diffOff, 3), 'Growth Rate':growthRate, 'Shift Type':curShift.typeStr(), \
-										'Fixed Core':fixedCore, 'Fixed Tie CSF':fixedTieCsf, 'Shifted Tie CSF':shiftedTieCsf, \
-										'Data Used':curShift.dataUsed, 'Quality Comment':curShift.comment})
+				series = pandas.Series({'Site':site, 'Hole':hole, 'Core':curShift.core.core, 'Core type':coreType, \
+										'Core top depth CSF-A (m)':csf, 'Core top depth CCSF (m)':ccsf, 'Cumulative offset (m)':round(cumOff,3), \
+										'Differential offset (m)':round(diffOff, 3), 'Growth rate':growthRate, 'Shift type':curShift.typeStr(), \
+										'Data used':curShift.dataUsed, 'Quality comment':curShift.comment, 'Reference core':fixedCore, \
+										'Reference tie point CSF-A (m)':fixedTieCsf, 'Shift tie point CSF-A (m)':shiftedTieCsf})
 				
 				affineRows.append(series)
 		if len(affineRows) > 0:
 			df = pandas.DataFrame(columns=tabularImport.AffineFormat.req)
 			df = df.append(affineRows, ignore_index=True)
 			tabularImport.writeToFile(df, affineFilePath)
+			self.currentAffineFile = affineFilePath
 			self.dirty = False
 		
 	def updateGUI(self):
@@ -3083,63 +3040,94 @@ class AffineController:
 	def pushState(self):
 		prevAffine = copy.deepcopy(self.affine)
 		self.undoStack.append(prevAffine)
-		
-	def confirmBreaks(self, fromCoreInfo, coreInfo, coreOnly, setAllOperation=False):
-		confirmed = True
-		if fromCoreInfo is None:
-			fromCoreInfo = AffineCoreInfo.createBogus() # bogus fromCore to ensure no matches
-		needConfirm, msg = self.needConfirmation(fromCoreInfo, coreInfo, coreOnly, setAllOperation)
-		if needConfirm:
-			confirmed = self.parent.OnShowMessage("Confirm", msg + "\nDo you want to continue?", 0) == wx.ID_YES
-		return confirmed
-	
-	def formatBreaks(self, breaks):
-		return "\n".join(["- from {} to {}".format(b[0], b[1]) for b in breaks]) + "\n"
-
-	# will shifting core have side effects that require user confirmation to proceed?
-	# returns tuple of form (confirmation needed [boolean], warning message [string])
-	def needConfirmation(self, fromCore, shiftCore, coreOnly, setAllOperation=False):
-		breaks = []
-		msg = "Shifting core {} ".format(shiftCore)
-		msg += "only " if coreOnly else "and related "
-		msg += "will break TIE chain(s):\n"
-		if coreOnly:
-			breaks = self.affine.findBreaks(shiftCore, fromCore)
-		else:
-			relatedCores = self.affine.gatherRelatedCores(fromCore, shiftCore, setAllOperation)
-			breaks = self.affine.findBreaks(shiftCore, fromCore, relatedCores)
-
-		needConfirm = len(breaks) > 0
-		return needConfirm, msg + "{}".format(self.formatBreaks(breaks))	
 	
 	def isDirty(self):
 		return self.dirty
 
-	# shift a single core with method SET
+	def confirmBreaks(self, breaks):
+		confirmed = True
+		if len(breaks) > 0:
+			msg = "This operation will break the following TIEs:\n\n"
+			msg += "{}\n".format(self._makeBreaksString(breaks))
+			msg += "Do you want to continue?"
+			confirmed = self.parent.OnShowMessage("Confirm Breaks", msg, 0) == wx.ID_YES
+		return confirmed
+
+	def _makeBreaksString(self, breaks):
+		bs = ""
+		for b in breaks:
+			bs += "{} > {}\n".format(b[0], b[1])
+		return bs
+
+	# shift a single untied core with method SET
 	def set(self, hole, core, distance, dataUsed="", comment=""):
-		if self.confirmBreaks(fromCoreInfo=None, coreInfo=aci(hole, core), coreOnly=True):
+		if self.affine.isTie(aci(hole, core)):
+			errmsg = "Core {}{} is shifted by a TIE and is part of a chain.\nIt cannot be SET unless that TIE is broken first.".format(hole, core)
+			self.parent.OnShowMessage("Error", errmsg, 1)
+			return
+
+		setOp = self.affine.set(aci(hole, core), distance, dataUsed, comment)
+		if not self.confirmBreaks(setOp.infoDict['breaks']):
+			return
+		if not self.removeShiftingCoresFromSplice(setOp.getCoresToBeMoved()):
+			return
+		self.pushState()
+		self.affine.execute(setOp)
+		self.dirty = True
+		self.updateGUI()
+
+	# Shift an entire chain by shifting chain root with method SET.
+	# All descendants will remain TIEs.
+	def setChainRoot(self, hole, core, distance, dataUsed="", comment=""):
+		if self.affine.isRoot(aci(hole, core)):
+			setChainOp = self.affine.setChainRoot(aci(hole, core), distance, dataUsed, comment)
+			if not self.removeShiftingCoresFromSplice(setChainOp.getCoresToBeMoved()):
+				return
 			self.pushState()
-			self.affine.set(True, aci(hole, core), distance, dataUsed, comment)
+			self.affine.execute(setChainOp)
 			self.dirty = True
 			self.updateGUI()
+		else:
+			msg = "The selected core, {}{}, is not the root core of a chain.\n" \
+			"The root core must be selected to shift an entire chain.".format(hole, core)
+			self.parent.OnShowMessage("Error", msg, 1)
 		
-	# shift all cores in a hole with method SET
+	# shift all untied cores in a hole with method SET
 	def setAll(self, hole, coreList, value, isPercent, dataUsed="", comment=""):
-		if self.confirmBreaks(fromCoreInfo=None, coreInfo=aci(hole, coreList[0]), coreOnly=False, setAllOperation=True):
+		site = self.parent.Window.GetHoleSite(hole)
+		setAllOp = self.affine.setAll(hole, coreList, value, isPercent, site, self.parent.sectionSummary, dataUsed, comment)
+
+		proceed = True
+		tieCores = setAllOp.infoDict['tieCores']
+		if len(tieCores) > 0:
+			tieCoreNames = [str(c) for c in tieCores]
+			msg = "The following cores are shifted by a TIE and are part of a chain:\n\n{}\n\n" \
+			"They will not be SET unless you first break their TIEs. " \
+			"Do you still want to SET untied cores?".format(', '.join(tieCoreNames))
+			proceed = self.parent.OnShowMessage("Warning", msg, 0) == wx.ID_YES
+
+		# warn/confirm about breaks for chain roots that will be moved...
+		chainRoots = setAllOp.infoDict['chainRoots']
+		if proceed and len(chainRoots) > 0:
+			chainRootNames = [str(c) for c in chainRoots]
+			breaksStr = self._makeBreaksString(setAllOp.infoDict['breaks'])
+			msg = "The following cores are the root of a TIE chain:\n\n{}\n\n" \
+			"Shifting them by SET will break the following TIEs:\n\n{}\n" \
+			"Do you still want to proceed with this SET?".format(', '.join(chainRootNames), breaksStr)
+			proceed = self.parent.OnShowMessage("Confirm Breaks", msg, 0) == wx.ID_YES
+
+		if proceed: # warn/confirm about removing shifting cores from splice
+			proceed = self.removeShiftingCoresFromSplice(setAllOp.getCoresToBeMoved())
+
+		if proceed:
 			self.pushState()
-			site = self.parent.Window.GetHoleSite(hole)
-			for core in coreList:
-				if isPercent:
-					coreTop, coreBot = self.parent.sectionSummary.getCoreRange(site, hole, core)
-					shiftDistance = (coreTop * value) - coreTop
-				else:
-					shiftDistance = value
-				self.affine.set(False, aci(hole, core), shiftDistance, dataUsed, comment)
+			self.affine.execute(setAllOp)
 			self.dirty = True
 			self.updateGUI()
 			
 	# fromDepth - MBSF depth of tie point on fromCore
 	# depth - MBSF depth of tie point on core
+	# Returns True if tie was made, False if not (user didn't confirm breaks)
 	def tie(self, coreOnly, fromHole, fromCore, fromDepth, hole, core, depth, dataUsed="", comment=""):
 		fromCoreInfo = aci(fromHole, fromCore)
 		coreInfo = aci(hole, core)
@@ -3148,11 +3136,51 @@ class AffineController:
 		fromDepth = fromDepth - self.affine.getShift(fromCoreInfo).distance
 		depth = depth - self.affine.getShift(coreInfo).distance
 		
-		if self.confirmBreaks(fromCoreInfo, coreInfo, coreOnly):
+		tieOp = self.affine.tie(coreOnly, mcdShiftDist, fromCoreInfo, fromDepth, coreInfo, depth, dataUsed, comment)
+		if not self.confirmBreaks(tieOp.infoDict['breaks']):
+			return False
+		if not self.removeShiftingCoresFromSplice(tieOp.getCoresToBeMoved()):
+			return False
+
+		self.pushState()
+		self.affine.execute(tieOp)
+		self.dirty = True
+		self.updateGUI()
+		return True
+
+	# Find splice intervals with cores in shiftingCores, prompt user and remove
+	# intervals if confirmed.
+	# Return True if user confirmed, or no matching splice intervals were found.
+	# Otherwise return False.
+	def removeShiftingCoresFromSplice(self, shiftingCores):
+		coresInSplice = []
+		intervalsToRemove = []
+		for sc in shiftingCores:
+			intervals = self.parent.spliceManager.findIntervals(sc.hole, sc.core)
+			if len(intervals) > 0:
+				intervalsToRemove += intervals
+				coresInSplice.append(sc)
+		if len(intervalsToRemove) > 0:
+			msg = "This operation affects cores included in the current splice:\n\n"
+			msg += "{}\n\n".format(', '.join(sorted([str(sc) for sc in coresInSplice])))
+			msg += "These cores will be removed from the splice, which cannot be undone.\n\n"
+			msg += "Do you want to continue?"
+			if self.parent.OnShowMessage("Splice Intervals Affected", msg, 0) == wx.ID_YES:
+				for interval in intervalsToRemove:
+					self.parent.spliceManager.delete(interval)
+			else:
+				self.parent.Window.ClearCompositeTies()
+				return False
+		return True
+
+	def breakTie(self, coreStr):
+		core = acistr(coreStr)
+		if self.affine.hasShift(core) and isTie(self.affine.getShift(core)):
 			self.pushState()
-			self.affine.tie(coreOnly, mcdShiftDist, fromCoreInfo, fromDepth, coreInfo, depth, dataUsed, comment)
+			self.affine.makeImplicit(core)
 			self.dirty = True
 			self.updateGUI()
+			self.parent.Window.UpdateDrawing()
 
 	def hasShift(self, hole, core):
 		return self.affine.hasShift(aci(hole, str(core)))
@@ -3194,12 +3222,22 @@ class AffineController:
 		coremin, coremax = secsumm.getCoreRange(coreinfo.leg, coreinfo.hole, coreinfo.holeCore)
 		return coremin
 	
-	# get rows for GUI affine table: each tuple is hole+core, shift distance, and shift type
-	def getAffineRows(self):
+	# get rows for UI affine table: each tuple is hole+core, shift distance, and shift type
+	def getAffineRowsForUI(self):
 		rows = []
 		for shift in self.affine.getSortedShifts():
-			rows.append((shift.core.GetHoleCoreStr(), str(shift.distance), self.getShiftTypeStr(shift.core.hole, shift.core.core)))
+			core = shift.core.GetHoleCoreStr()
+			offset = str(shift.distance)
+			shiftType = self.getShiftTypeStr(shift.core.hole, shift.core.core)
+			if isTie(shift): # include reference core for ties
+				shiftType += " ({})".format(shift.fromCore)
+			rows.append((core, offset, shiftType))
 		return rows
+
+	# Return list of TIE chain roots as (hole, core) tuples
+	def getChainRoots(self):
+		roots = self.affine.getChainRoots()
+		return [(str(r.hole), str(r.core)) for r in roots]
 	
 	# moveCore and fixedCore are CoreInfo objects
 	def isLegalTie(self, moveCore, fixedCore):
@@ -3222,6 +3260,7 @@ class SpliceController:
 		self.parent = parent # MainFrame
 		self.splice = splice.SpliceBuilder() # SpliceBuilder for current splice
 		self.altSplice = splice.SpliceBuilder() # SpliceBuilder for alternate splice
+		self.currentSpliceFile = None
 		
 		self.clear() # init selection, file state members
 		
@@ -3248,6 +3287,7 @@ class SpliceController:
 	def clear(self):
 		self.splice.clear()
 		self.altSplice.clear()
+		self.currentSpliceFile = None
 		self.selected = None # selected SpliceInterval
 		self.selectedTie = None # selected splice handle
 		self.topTie = None # brgtodo: rename to handles since these don't always represent a "TIE"
@@ -3293,6 +3333,7 @@ class SpliceController:
 			self.deleteSelected()
 		else:
 			self.splice.delete(interval)
+		self.setDirty(self.count() > 0) # can't save a splice with zero intervals
 		self._onDelete()
 			
 	def select(self, depth):
@@ -3322,7 +3363,7 @@ class SpliceController:
 		if self.splice.delete(self.selected):
 			self.selected = None
 			self.selectTie(None)
-			self.setDirty()
+			self.setDirty(self.count() > 0) # can't save a splice with zero intervals
 			self._onSelChange()
 			
 	def selectTie(self, siTie):
@@ -3471,10 +3512,12 @@ class SpliceController:
 			df = df.append(rows, ignore_index=True)
 			#print "{}".format(df)
 			tabularImport.writeToFile(df, filepath)
+			self.currentSpliceFile = filepath
 			self.setDirty(False)
 			
 	def load(self, filepath, destSplice, datatype=None):
 		df = tabularImport.readFile(filepath)
+		self.currentSpliceFile = filepath
 		previousSpliceType = None
 		previousAffBot = None
 		for index, row in df.iterrows(): # itertuples() is faster if needed
@@ -3527,12 +3570,12 @@ class SpliceController:
 				#print "seeking section at depth {}: result = {}".format(mbsf, section)
 				if section is not None:
 					secTop = secsumm.getSectionTop(si.coreinfo.leg, si.coreinfo.hole, si.coreinfo.holeCore, section)
-					topOffset = round((mbsf - secTop) * 100, 1)
+					topOffset = round((mbsf - secTop) * 100, 2)
 					botOffset = topOffset
-					rawDepth = round(p[0] - affineOffset, 3)
+					rawDepth = round(p[0] - affineOffset, 4)
 					row = pandas.Series({'Exp':si.coreinfo.site, 'Site':si.coreinfo.leg, 'Hole':si.coreinfo.hole,
 									'Core':si.coreinfo.holeCore, 'CoreType':coreType, 'Section':section, 'TopOffset':topOffset,
-									'BottomOffset':botOffset, 'Depth':round(p[0], 3), 'Data':p[1], 'RunNo':'-', 'RawDepth':rawDepth, 'Offset':affineOffset})
+									'BottomOffset':botOffset, 'Depth':round(p[0], 4), 'Data':p[1], 'RunNo':'-', 'RawDepth':rawDepth, 'Offset':affineOffset})
 					exportRows.append(row)
 				else:
 					print "Couldn't find section in {}{} at depth {}, skipping".format(si.coreinfo.hole, si.coreinfo.holeCore, mbsf)
@@ -3551,6 +3594,13 @@ class SpliceController:
 		if datatype is None:
 			datatype = row["Data Used"]
 			# older SIT tables may not have Data Used values...grab first available type
+			# 3/19/2019: I believe the block below will always fail while Loading because
+			# findCoreInfoByHoleCore() is checking DrawData["CoreInfo"], which will be empty
+			# because we haven't drawn anything yet! It and other related methods should be
+			# searching HoleData instead. Thankfully this is only an issue with old SIT tables
+			# without a 'Data Used' column, which we're unlikely to encounter at this point.
+			# But it also prevents us from substituting an available datatype if the 'Data Used'
+			# type is unavailable.
 			if datatype is None:
 				ci = self.parent.Window.findCoreInfoByHoleCore(hole, core)
 				datatype = ci.type
@@ -3590,6 +3640,7 @@ class SpliceController:
 		return matches
 
 	# do currently-applied affine shifts match corresponding Splice Interval file's shifts?
+	# filepath: path to splice interval table to check against affine shifts
 	def canApplyAffine(self, filepath):
 		canApply = True
 		df = tabularImport.readFile(filepath)
@@ -3599,40 +3650,34 @@ class SpliceController:
 				canApply = False
 				break
 		return canApply
-	
-	# called before an affine shift - are the shifted core(s) included in the splice?
-	def allowAffineShift(self, hole, core, below=False):
-		matches = self.findIntervals(hole, core, below)
-		return len(matches) == 0
-	
-	def findIntervals(self, hole, core, below=False):
-		matches = [i for i in self.splice.ints if i.coreinfo.hole == hole]
-		if core is not None:
-			if below: # include all cores below core
-				matches = [i for i in matches if int(i.coreinfo.holeCore) >= int(core)]
-			else: # single core
-				matches = [i for i in matches if int(i.coreinfo.holeCore) == int(core)]
+
+	# Check whether all the datatype-core combinations required by a splice are
+	# currently loaded. Returns a (boolean, dict) tuple. If the first element is
+	# True, all required datatype-cores are loaded and the dict will be empty.
+	# If False, required datatype-cores are missing, and are listed in the dict
+	# with key=datatype name : value=a list of strings indicating missing cores
+	# for that datatype.
+	# splicePath: path to splice file to check against loaded cores
+	def requiredDataIsLoaded(self, splicePath):
+		missingData = {}
+		df = tabularImport.readFile(splicePath)
+		for index, row in df.iterrows():
+			hole, core, datatype = row['Hole'], str(row['Core']), row['Data Used']
+			if datatype == "NaturalGamma":
+				datatype = "Natural Gamma"
+			coreinfo = self.parent.Window.findCoreInfoByHoleCoreType_v2(hole, core, datatype)
+			if coreinfo is None:
+				missingCoreStr = "{}{}".format(str(hole), str(core))
+				if datatype in missingData:
+					missingData[datatype].append(missingCoreStr)
+				else:
+					missingData[datatype] = [missingCoreStr]
+		return len(missingData) == 0, missingData
+
+	# Return list of splice intervals matching specified hole and core.
+	def findIntervals(self, hole, core):
+		matches = [i for i in self.splice.ints if i.coreinfo.hole == hole and i.coreinfo.holeCore == core]
 		return matches
-
-
-# retrieve existing UUID from .correlator/uuid.p, or create new UUID if none exists
-def get_uuid():
-	userUuid = None
-	uuidFile = os.path.join(User_Dir, ".correlator", "uuid.p")
-	if os.path.exists(uuidFile):
-		with open(uuidFile, 'r') as uuidFileStream:
-			userUuid = pickle.load(uuidFileStream)
-	else:
-		userUuid = uuid.uuid4()
-		with open(uuidFile, 'w+') as uuidFileStream:
-			pickle.dump(userUuid, uuidFileStream)
-	return userUuid
-
-# ping GA launch tracker
-def ping_tracker():
-	userUuid = get_uuid()
-	tracker = UniversalAnalytics.Tracker.create("UA-99979639-1", client_id=userUuid)
-	tracker.send('pageview', path='/', title='launch: UUID={}'.format(userUuid))
 
 
 class CorrelatorApp(wx.App):
@@ -3645,20 +3690,20 @@ class CorrelatorApp(wx.App):
 	def OnInit(self):
 		user = getpass.getuser()
 		if self.showSplash:
-			openframe = dialog.OpenFrame(None, -1, user, vers.ShortVersion)
-			openframe.Centre()
-			ret =  openframe.ShowModal()
-			user = openframe.user
-			openframe.Destroy()
-			if ret == wx.ID_CANCEL :
-				if global_logFile != None :
+			splash = dialog.SplashScreen(None, -1, user, vers.ShortVersion)
+			splash.Centre()
+			ret =  splash.ShowModal()
+			user = splash.user
+			splash.Destroy()
+			if ret == wx.ID_CANCEL:
+				if global_logFile != None:
 					global_logFile.close()
-					if sys.platform == 'win32' :
+					if sys.platform == 'win32':
 						workingdir = os.getcwd()
 						os.chdir(myPath)
 						os.system('del ' + global_logName)
 						os.chdir(workingdir)
-					else :
+					else:
 						filename = myPath + global_logName
 						os.system('rm \"'+ filename + '\"')
 				return False
@@ -3669,16 +3714,16 @@ class CorrelatorApp(wx.App):
 		problemFlag = False 
 		checklogFile = open(myTempPath + "success.txt", "r")
 		line = checklogFile.readline()
-		if len(line) == 0 : 
+		if len(line) == 0: 
 			problemFlag = True
-		elif line[0:5] == "start" :
+		elif line[0:5] == "start":
 			problemFlag = True
-		else :
+		else:
 			line = checklogFile.readline()
 			winx = int(line)
 			line = checklogFile.readline()
 			winy = int(line)
-			if (winx < 0) and (winy < 0) :
+			if (winx < 0) and (winy < 0):
 				winx = 460
 				winy = 600 
 		checklogFile.close()
@@ -3687,10 +3732,10 @@ class CorrelatorApp(wx.App):
 		self.SetTopWindow(self.frame)
 
 		# This is for version difference
-		#if self.new == True :
+		#if self.new == True:
 		#	self.frame.IMPORTRepository()
 
-		if problemFlag == True :
+		if problemFlag == True:
 			defaultTempFile = open("./tmp/default.cfg", "r+")
 			#print "[DEBUG] Configuration file is regenerated."
 			line = defaultTempFile.read()
@@ -3719,13 +3764,25 @@ class CorrelatorApp(wx.App):
 		self.frame.dataFrame.Show(True)
 		self.frame.topMenu.Show(True)
 
-		#if platform_name[0] != "Windows" : 
-		#openframe.Hide()
-		#openframe.Destroy()
+		# ensure all data is cleared and all data-dependent Display controls are disabled
+		self.frame.OnNewData(None)
+
 		self.SetExitOnFrameDelete(False)
 
 		return True
 
+
+def reportUnhandledException(exc_type, exc_value, exc_traceback):
+	err_msg = 'Correlator encountered an error:\n'
+	err_msg += '\n'.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+	err_msg += 'Unhandled Exception'
+	print(err_msg)
+	dlg = wx.MessageDialog(None, err_msg, 'Exception', wx.OK | wx.ICON_ERROR)
+	dlg.ShowModal()
+	dlg.Destroy()
+
+# override default unhandled exception handling - report error via GUI
+sys.excepthook = reportUnhandledException
 
 if __name__ == "__main__":
 
@@ -3740,47 +3797,55 @@ if __name__ == "__main__":
 	if not os.access(configDir, os.F_OK):
 		os.mkdir(configDir)
 
-	if platform_name[0] == "Windows" :
-		if os.access(User_Dir  + "\\Correlator\\", os.F_OK) == False :
+	# check for preferences file, if none create default
+	prefsPath = os.path.join(configDir, "prefs.pk")
+	Prefs = prefs.Prefs(prefsPath)
+	if not Prefs.contains("inferSectionSummary"):
+		Prefs.set("inferSectionSummary", False)
+	if not Prefs.contains("checkForSpliceCores"):
+		Prefs.set("checkForSpliceCores", True)
+
+	if platform_name[0] == "Windows":
+		if os.access(User_Dir  + "\\Correlator\\", os.F_OK) == False:
 			os.mkdir(User_Dir  + "\\Correlator\\")
 			new = True
-	else :
-		if os.access(User_Dir  + "/Documents/Correlator/", os.F_OK) == False :
+	else:
+		if os.access(User_Dir  + "/Documents/Correlator/", os.F_OK) == False:
 			os.mkdir(User_Dir  + "/Documents/Correlator/")
 			new = True
 
-	if os.access(myPath, os.F_OK) == False :
+	if os.access(myPath, os.F_OK) == False:
 		os.mkdir(myPath)
-		if new == True :
+		if new == True:
 			new = False
-		else : 
+		else: 
 			new = True 
 
-	if os.access(myPath+"tmp", os.F_OK) == False :
+	if os.access(myPath+"tmp", os.F_OK) == False:
 		os.mkdir(myPath + "tmp")
 		cmd = "cp ./tmp/*.* " + myPath + "tmp"
-		if platform_name[0] == "Windows" :
+		if platform_name[0] == "Windows":
 			cmd = "copy tmp\\*.* \"" + myTempPath + "\""
 		os.system(cmd)
 		cmd = "cp " + myTempPath + "/tmp/default.cfg " + myPath
-		if platform_name[0] == "Windows" :
+		if platform_name[0] == "Windows":
 			cmd = "copy " + myTempPath + "\\tmp\\default.cfg \"" + myPath + "\""
 
 		#print "[DEBUG] " + cmd
 		os.system(cmd)
 
-	if platform_name[0] == "Windows" :
+	if platform_name[0] == "Windows":
 		myTempPath = myPath + "tmp\\"
-	else :
+	else:
 		myTempPath = myPath + "tmp/"
 	
-	if os.access(myTempPath+"success.txt", os.F_OK) == False :
+	if os.access(myTempPath+"success.txt", os.F_OK) == False:
 		cmd = "cp ./tmp/*.* " + myTempPath
-		if platform_name[0] == "Windows" :
+		if platform_name[0] == "Windows":
 			cmd = "copy tmp\\*.* \"" + myTempPath + "\""
 		os.system(cmd)
 
-	if os.access(myPath + '/log/', os.F_OK) == False :
+	if os.access(myPath + '/log/', os.F_OK) == False:
 		os.mkdir(myPath + '/log/')
 
 #	tempstamp = str(datetime.today())
@@ -3795,7 +3860,7 @@ if __name__ == "__main__":
 	stamp += tempstamp[start:last]
 
 	global_logName = "log/" + getpass.getuser() + "." + stamp + ".txt"
-	if platform_name[0] == "Windows" :
+	if platform_name[0] == "Windows":
 		global_logName= "log\\" + getpass.getuser() + "." + stamp + ".txt"
 
 	global_logFile = open(myPath + global_logName, "a+")
@@ -3806,7 +3871,6 @@ if __name__ == "__main__":
 	global_logFile.write(s)
 
 	ret = py_correlator.initialize("../DATA/current-test")
-	ping_tracker()
 	app = CorrelatorApp(new)
 	app.MainLoop()
 	win_size = app.frame.Width, app.frame.Height

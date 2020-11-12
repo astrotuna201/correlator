@@ -14,12 +14,13 @@ from wx.lib import plot
 import numpy
 
 from datetime import datetime
-import random, sys, os, re, time, ConfigParser, string
+import random, sys, os, re, time, ConfigParser, string, traceback
 
 from importManager import py_correlator
 
 import frames
 import splice
+
 
 # brg 4/9/2014: Why are we defining our own wxBufferedWindow when
 # wx.BufferedWindow already exists (same interface 'n all) in wx?
@@ -72,16 +73,16 @@ class wxBufferedWindow(wx.Window):
 		# the same size as the Window
 		self.Width, self.Height = self.GetClientSizeTuple()
 				
-		if self.CLOSEFLAG == 1 :
+		if self.CLOSEFLAG == 1:
 			self.Width = self.Width - 45 
-		else :
+		else:
 			self.Width = self.Width - self.sideTabSize
 		self.WindowUpdate = 1
 
 		# Make new off screen bitmap: this bitmap will always have the
 		# current drawing in it, so it can be used to save the image to
 		# a file, or whatever.
-		if self.Width > 0 and self.Height > 0 :
+		if self.Width > 0 and self.Height > 0:
 			self._Buffer = wx.EmptyBitmap(self.Width, self.Height)
 			self.UpdateDrawing()
 
@@ -172,20 +173,47 @@ class DragCoreData:
 		self.x = curMouseX
 		self.y = curMouseY - self.origMouseY
 
+
+# Report changes in the number of affine tie points, at most
+# two if fixed and movable ties have been created.
+class AffineTiePointEventBroadcaster:
+	def __init__(self):
+		self.listeners = []
+
+    # Listener l is a function with a single integer parameter
+    # indicating the current affine tie point count.
+	def addListener(self, l):
+		if l not in self.listeners:
+			self.listeners.append(l)
+
+	def removeListener(self, l):
+		if l in self.listeners:
+			self.listeners.remove(l)
+
+	def updateAffineTiePointCount(self, count):
+		for l in self.listeners:
+			l(count)
+
+
 class DataCanvas(wxBufferedWindow):
 	def __init__(self, parent, id= -1):
 		## Any data the Draw() function needs must be initialized before
 		## calling wxBufferedWindow.__init__, as it will call the Draw
 		## function.
+		self.drawCount = 0
 
 		stdFontSize = 9 if platform_name[0] == "Windows" else 12 # 12 point too large on Windows, just right on Mac
 		self.stdFont = wx.Font(stdFontSize, wx.SWISS, wx.NORMAL, wx.BOLD)
 		self.ageFont = wx.Font(9, wx.SWISS, wx.NORMAL, wx.BOLD) # used only for drawing label in age depth model points
+		holeInfoFontSize = 8 if platform_name[0] == "Windows" else 11
+		self.holeInfoFont = wx.Font(holeInfoFontSize, wx.SWISS, wx.NORMAL, wx.BOLD) # used for info above each hole plot
 					
 		self.parent = parent
 		self.DrawData = {}
 		self.Highlight_Tie = -1
 		self.SpliceTieFromFile = 0
+
+		self.affineBroadcaster = AffineTiePointEventBroadcaster()
 
 		# brgtodo 6/26/2014: ShiftTieList is populated with new composite shifts only,
 		# but shift arrows still draw correctly without this, even for a new shift. Remove?
@@ -193,6 +221,8 @@ class DataCanvas(wxBufferedWindow):
 		self.showAffineShiftInfo = True  # brgtodo 6/25/2014 grab state from checkbox in frames and dump this var
 		self.showAffineTieArrows = True
 		self.showSectionDepths = True
+		self.showCoreInfo = False # show hole, core, min/max, quality, stretch on mouseover - see DrawGraphInfo()
+		self.showOutOfRangeData = False # if True, clip data plots to the width of the hole's plot area
 		self.LogTieList = []
 		self.LogClue = True    # brgtodo ditto
 
@@ -233,8 +263,7 @@ class DataCanvas(wxBufferedWindow):
 		# 0 , 1 - Composite, 2 - Splice
 		self.Process = 0 
 		self.Constrained = 1 
-		self.isSecondScroll = 1 # if 1, composite and splice windows scroll separately
-		self.isSecondScrollBackup = 1 # appears to backup isSecondScroll value 
+		self.independentScroll = False # scroll composite and splice windows separately
 		self.ScrollUpdate = 0
 		self.isLogMode = 0 
 		self.closeFlag = True 
@@ -293,7 +322,11 @@ class DataCanvas(wxBufferedWindow):
 		self.holeWidth = 300
 		self.spliceHoleWidth = 300
 		self.logHoleWidth = 210
-		
+
+		# Space to the left of a hole plot in which core number and shift type+distance are displayed.
+		# The hard-coded 50s littered throughout canvas.py should be replaced with this!
+		self.plotLeftMargin = 50
+
 		# y-coordinate where the first depth ruler tick is drawn
 		self.startDepth = 60
 
@@ -463,7 +496,7 @@ class DataCanvas(wxBufferedWindow):
 		self.spliceIntervalPanel.Hide()
 
 		start_pos = 50
-		if platform_name[0] == "Windows" :
+		if platform_name[0] == "Windows":
 			start_pos = 0
 
 		self.eldPanel = wx.Panel(self.sideNote, -1, (0, start_pos), (300, 500), style=wx.NO_BORDER)
@@ -510,23 +543,24 @@ class DataCanvas(wxBufferedWindow):
 		#self.reportText.SetEditable(False)
 
 		self.sideNote.AddPage(self.closePanel, 'Close')
-		self.sideNote.AddPage(self.compPanel, 'Composite')
+		self.sideNote.AddPage(self.compPanel, 'Shift Cores')
 		#self.sideNote.AddPage(self.splicePanel, 'Splice')
-		self.sideNote.AddPage(self.spliceIntervalPanel, "Splice Interval")
-		self.sideNote.AddPage(self.eldPanel, 'Core-Log Integration')
+		self.sideNote.AddPage(self.spliceIntervalPanel, "Splice Cores")
+		# self.sideNote.AddPage(self.eldPanel, 'Core-Log Integration')
 		#self.sideNote.AddPage(self.eldPanel, 'Correlation')
 
 		#self.sideNote.AddPage(self.autoPanel, 'Auto Correlation')
-		self.sideNote.AddPage(self.agePanel, 'Age Depth Model')
+		# self.sideNote.AddPage(self.agePanel, 'Age Depth Model')
 
-		self.sideNote.AddPage(self.filterPanel, 'Filter')
-		self.sideNote.AddPage(self.optPanel, 'Preferences')
+		self.sideNote.AddPage(self.filterPanel, 'Data Filters')
+		self.sideNote.AddPage(self.optPanel, 'Display Preferences')
 		#self.sideNote.AddPage(self.logPanel, 'Report')
 
 		#self.sideNote.AddPage(self.helpPanel, 'Help')
-		self.sideNote.SetSelection(1)
+		
 		self.sideNote.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.OnSelectNote)
-
+		self.sideNote.SetSelection(1)
+		
 		wx.EVT_MOTION(self, self.OnMotion)
 		wx.EVT_LEFT_DOWN(self, self.OnLMouse)
 		wx.EVT_RIGHT_DOWN(self, self.OnRMouse)
@@ -617,8 +651,8 @@ class DataCanvas(wxBufferedWindow):
 		self.splice_smooth_flag = 0
 
 	def UpdateRANGE(self, type, min, max):
-		for r in self.range :
-			if r[0] == type :
+		for r in self.range:
+			if r[0] == type:
 				coef = max - min
 				newrange = type, min, max, coef, r[4], r[5]
 				self.range.remove(r)
@@ -627,24 +661,24 @@ class DataCanvas(wxBufferedWindow):
 
 
 	def UpdateSMOOTH(self, type, smooth):
-		for r in self.range :
-			if r[0] == type :
+		for r in self.range:
+			if r[0] == type:
 				newrange = type, r[1], r[2], r[3], smooth, r[5] 
 				self.range.remove(r)
 				self.range.append(newrange)
 				break
 
-		if self.hole_sagan != -1 and type == self.sagan_type :
-			for r in self.range :
-				if r[0] == "splice" :
+		if self.hole_sagan != -1 and type == self.sagan_type:
+			for r in self.range:
+				if r[0] == "splice":
 					newrange = r[0], r[1], r[2], r[3], smooth, r[5] 
 					self.range.remove(r)
 					self.range.append(newrange)
 					break
 
 	def UpdateDATATYPE(self, type, continue_flag):
-		for r in self.range :
-			if r[0] == type :
+		for r in self.range:
+			if r[0] == type:
 				newrange = type, r[1], r[2], r[3], r[4], continue_flag 
 				self.range.remove(r)
 				self.range.append(newrange)
@@ -755,8 +789,8 @@ class DataCanvas(wxBufferedWindow):
 		return self.startDepth + (depth - self.SPrulerStartDepth) * (self.length / self.gap)
 
 	def GetMINMAX(self, type):
-		for r in self.range :
-			if r[0] == type :
+		for r in self.range:
+			if r[0] == type:
 				return (r[1], r[2])
 		return None
 	
@@ -786,25 +820,25 @@ class DataCanvas(wxBufferedWindow):
 
 	def OnSelectELDNote(self, event):
 		note_id = event.GetSelection()
-		if self.prevNoteId == note_id :
+		if self.prevNoteId == note_id:
 			self.prevNoteId = -1
 			return
 
 		self.manualPanel.Hide()
 		self.autoPanel.Hide()
 
-		if note_id == 0 :
+		if note_id == 0:
 			self.mode = 3
 			self.autoPanel.Show()
 			self.parent.showSplicePanel = 0 
 			self.parent.showCompositePanel = 0 
 			self.parent.showELDPanel = 0 
-		else :
-			#if self.ShowAutoPanel == False :
+		else:
+			#if self.ShowAutoPanel == False:
 			self.manualPanel.Show()
 			self.parent.showELDPanel = 1
 			self.mode = 3
-			if self.spliceWindowOn == 0 : 
+			if self.spliceWindowOn == 0: 
 				self.parent.OnActivateWindow(1)
 			self.parent.showSplicePanel = 0 
 			self.parent.showCompositePanel = 0 
@@ -833,8 +867,8 @@ class DataCanvas(wxBufferedWindow):
 		#self.logPanel.Hide()
 		#self.helpPanel.Hide()
 
-		if note_id == 0 :
-			if self.CLOSEFLAG == 0 :
+		if note_id == 0:
+			if self.CLOSEFLAG == 0:
 				self.parent.showCompositePanel = 0 
 				self.parent.showSplicePanel = 0 
 				self.parent.showELDPanel = 0 
@@ -846,11 +880,11 @@ class DataCanvas(wxBufferedWindow):
 				self.UpdateDrawing()
 				self.CLOSEFLAG = 1
 				self._Buffer = wx.EmptyBitmap(self.Width, self.Height)
-				if self.spliceWindowOn == 0 :
+				if self.spliceWindowOn == 0:
 					self.splicerX = self.Width + 45
 				self.UpdateDrawing()
-		else :
-			if self.CLOSEFLAG == 1 :
+		else:
+			if self.CLOSEFLAG == 1:
 				self.Width, self.Height = self.parent.GetClientSizeTuple()
 				self.Width = self.Width - self.sideTabSize
 				self.sidePanel.SetPosition((self.Width, 0))
@@ -858,57 +892,56 @@ class DataCanvas(wxBufferedWindow):
 				self.sideNote.SetSize((self.sideTabSize, self.Height))
 				self.CLOSEFLAG = 0 
 				self._Buffer = wx.EmptyBitmap(self.Width, self.Height)
-				if self.spliceWindowOn == 0 :
+				if self.spliceWindowOn == 0:
 					self.splicerX = self.Width + 45
 				self.UpdateDrawing()
 
-		if note_id == 1 :
+		if note_id == 1:
 			self.compPanel.Show()
 			self.parent.showCompositePanel = 1
 			self.mode = 1
-			#if self.spliceWindowOn == 1 : 
+			#if self.spliceWindowOn == 1: 
 			#	self.parent.OnActivateWindow(1)
 			self.parent.showSplicePanel = 0 
 			self.parent.showELDPanel = 0 
-			self.parent.compositePanel.OnUpdatePlots()
 		elif note_id == 2:
 			self.spliceIntervalPanel.Show()
 			self.parent.showSplicePanel = 1
 			self.parent.showCompositePanel = 0 
 			self.parent.showELDPanel = 0
-		elif note_id == 3 :
-			self.mode = 3
-			#if self.ShowAutoPanel == False :
-			self.eldPanel.Show()
-			self.parent.showELDPanel = 1
-			self.mode = 3
-			if self.spliceWindowOn == 0 : 
-				self.parent.OnActivateWindow(1)
-			self.parent.showSplicePanel = 0 
-			self.parent.showCompositePanel = 0 
+		# elif note_id == 3:
+		# 	self.mode = 3
+		# 	#if self.ShowAutoPanel == False:
+		# 	self.eldPanel.Show()
+		# 	self.parent.showELDPanel = 1
+		# 	self.mode = 3
+		# 	if self.spliceWindowOn == 0: 
+		# 		self.parent.OnActivateWindow(1)
+		# 	self.parent.showSplicePanel = 0 
+		# 	self.parent.showCompositePanel = 0 
 
-			if self.parent.showELDPanel == 1 :
-				self.parent.eldPanel.OnUpdate()
+		# 	if self.parent.showELDPanel == 1:
+		# 		self.parent.eldPanel.OnUpdate()
 
-			# -------- HJ
-			#self.mode = 3
-			#self.autoPanel.Show()
-			#self.parent.showSplicePanel = 0 
-			#self.parent.showCompositePanel = 0 
-			#self.parent.showELDPanel = 0 
-			# --------
-		elif note_id == 4 :
-			self.mode = 4
-			self.agePanel.Show()
-			self.parent.showSplicePanel = 0 
-			self.parent.showCompositePanel = 0 
-			self.parent.showELDPanel = 0 
-		elif note_id == 5 :
+		# 	# -------- HJ
+		# 	#self.mode = 3
+		# 	#self.autoPanel.Show()
+		# 	#self.parent.showSplicePanel = 0 
+		# 	#self.parent.showCompositePanel = 0 
+		# 	#self.parent.showELDPanel = 0 
+		# 	# --------
+		# elif note_id == 4:
+		# 	self.mode = 4
+		# 	self.agePanel.Show()
+		# 	self.parent.showSplicePanel = 0 
+		# 	self.parent.showCompositePanel = 0 
+		# 	self.parent.showELDPanel = 0 
+		elif note_id == 3:#5:
 			self.filterPanel.Show()
 			self.parent.showSplicePanel = 0 
 			self.parent.showCompositePanel = 0 
 			self.parent.showELDPanel = 0 
-		elif note_id == 6 :
+		elif note_id == 4:#6:
 			self.optPanel.Show()
 			#self.parent.optPanel.updateItem()
 			self.parent.showSplicePanel = 0 
@@ -940,7 +973,7 @@ class DataCanvas(wxBufferedWindow):
 		self.ageRulerTickRate = self.CalcTickRate(rulerRange)
 
 		unitAdjFactor = self.GetRulerUnitsFactor()
-		while True :
+		while True:
 			adjPos = pos * unitAdjFactor
 			dc.DrawLines(((self.compositeX - 10, depth), (self.compositeX, depth)))
 			wid, hit = dc.GetTextExtent(str(adjPos))
@@ -949,7 +982,7 @@ class DataCanvas(wxBufferedWindow):
 			dc.DrawLines(((self.compositeX - 5, depth), (self.compositeX, depth)))
 			depth = depth + (self.ageRulerTickRate * self.ageYLength / self.ageGap) 
 			pos = pos + self.ageRulerTickRate * 2
-			if depth > self.Height :
+			if depth > self.Height:
 				break
 
 		self.rulerEndAgeDepth = pos
@@ -964,15 +997,15 @@ class DataCanvas(wxBufferedWindow):
 		#x = self.compositeX + width 
 
 		maxsize = self.splicerX - 50
-		for i in range(self.maxAgeRange) :
-			if x > self.compositeX and x < maxsize :
+		for i in range(self.maxAgeRange):
+			if x > self.compositeX and x < maxsize:
 				dc.DrawLines(((x, y1), (x, y2)))
 				dc.DrawText(str(pos), x - 10, y3)
-			pos = pos + self.ageXGap;
+			pos = pos + self.ageXGap
 			x = self.compositeX + ((pos - self.minAgeRange) * self.ageLength)
 
 		# Draw ruler on splicer space
-		if self.spliceWindowOn == 1 :
+		if self.spliceWindowOn == 1:
 			depth = self.startDepth 
 			pos = self.SPrulerStartDepth 
 
@@ -982,7 +1015,7 @@ class DataCanvas(wxBufferedWindow):
 
 			temppos = self.SPrulerStartDepth % (self.gap / 2)
 			dc.DrawLines(((self.splicerX - 10, depth), (self.splicerX, depth)))
-			if temppos > 0 : 
+			if temppos > 0: 
 				dc.DrawText(str(pos), self.splicerX - 35, depth - 5)
 				depth = depth + (self.length / 2) * (1 - temppos) 
 				dc.DrawLines(((self.splicerX - 5, depth), (self.splicerX, depth)))
@@ -991,45 +1024,45 @@ class DataCanvas(wxBufferedWindow):
 
 			dc.DrawText("Ma", self.splicerX - 35, 20)
 			agedepth = 0.0 
-			if self.SPrulerStartAgeDepth <= 0.0 :
+			if self.SPrulerStartAgeDepth <= 0.0:
 				dc.DrawText(str(agedepth), self.splicerX - 35, self.startAgeDepth - 5)
 			count = 1
 			agedepth = self.AgeUnit
 			agey = count * self.AgeSpliceGap
-			if self.spliceYLength > 40 :
-				while True :
+			if self.spliceYLength > 40:
+				while True:
 					y = self.startAgeDepth + (agey - self.SPrulerStartAgeDepth) * (self.spliceYLength / self.gap)
 					dc.DrawLines(((self.splicerX - 10, y), (self.splicerX, y)))
 					dc.DrawText(str(agedepth), self.splicerX - 35, y - 5)
-					if y > self.Height : 
+					if y > self.Height: 
 						break
 					count = count + 1
 					agedepth = count * self.AgeUnit
 					agey = count * self.AgeSpliceGap
-			elif self.spliceYLength > 20 :
-				while True :
+			elif self.spliceYLength > 20:
+				while True:
 					y = self.startAgeDepth + (agey - self.SPrulerStartAgeDepth) * (self.spliceYLength / self.gap)
-					if count % 2 == 0 :
+					if count % 2 == 0:
 						dc.DrawLines(((self.splicerX - 10, y), (self.splicerX, y)))
 						dc.DrawText(str(agedepth), self.splicerX - 35, y - 5)
-					else :
+					else:
 						dc.DrawLines(((self.splicerX - 5, y), (self.splicerX, y)))
 
-					if y > self.Height : 
+					if y > self.Height: 
 						break
 					count = count + 1
 					agedepth = count * self.AgeUnit
 					agey = count * self.AgeSpliceGap
-			else :
-				while True :
+			else:
+				while True:
 					y = self.startAgeDepth + (agey - self.SPrulerStartAgeDepth) * (self.spliceYLength / self.gap)
-					if count % 5 == 0 :
+					if count % 5 == 0:
 						dc.DrawLines(((self.splicerX - 10, y), (self.splicerX, y)))
 						dc.DrawText(str(agedepth), self.splicerX - 35, y - 5)
-					else :
+					else:
 						dc.DrawLines(((self.splicerX - 5, y), (self.splicerX, y)))
 
-					if y > self.Height : 
+					if y > self.Height: 
 						break
 					count = count + 1
 					agedepth = count * self.AgeUnit
@@ -1042,7 +1075,7 @@ class DataCanvas(wxBufferedWindow):
 	# Given rulerRange (in meters), return a suitable rate of depth scale tick marks (in meters).
 	def CalcTickRate(self, rulerRange):
 		result = 1.0
-		exp = 5;
+		exp = 5
 		while True:
 			bigTens = pow(10, exp)
 			halfBigTens = bigTens / 2.0
@@ -1072,10 +1105,10 @@ class DataCanvas(wxBufferedWindow):
 		dc.SetFont(self.stdFont)
 
 		rulerUnitsStr = " (" + self.GetRulerUnitsStr() + ")"
-		if self.timeseries_flag == False :
+		if self.timeseries_flag == False:
 			dc.DrawText("Depth", self.compositeX - 35, self.startDepth - 45)
 			dc.DrawText(rulerUnitsStr, self.compositeX - 35, self.startDepth - 35)
-		else :
+		else:
 			dc.DrawText("Age", self.compositeX - 35, self.startDepth - 45)
 			dc.DrawText("(Ma)", self.compositeX - 35, self.startDepth - 35)
 
@@ -1086,11 +1119,11 @@ class DataCanvas(wxBufferedWindow):
 
 		# Draw depth scale ticks
 		self.rulerHeight = self.Height - self.startDepth
-		rulerRange = (self.rulerHeight / self.length) * 2;
+		rulerRange = (self.rulerHeight / self.length) * 2
 		self.rulerTickRate = self.CalcTickRate(rulerRange)
 
 		unitAdjFactor = self.GetRulerUnitsFactor()
-		while True :
+		while True:
 			adjPos = pos * unitAdjFactor
 
 			dc.DrawLines(((self.compositeX - 10, depth), (self.compositeX, depth))) # depth-labeled ticks
@@ -1102,28 +1135,28 @@ class DataCanvas(wxBufferedWindow):
 			depth = depth + (self.rulerTickRate * self.length) / 2 
 
 			pos = pos + self.rulerTickRate * 2
-			if depth > self.Height :
+			if depth > self.Height:
 				break
 
 		self.rulerEndDepth = pos + 2.0
 		self.parent.compositePanel.UpdateGrowthPlot()
 
 		# Draw ruler on splicer space
-		if self.spliceWindowOn == 1 :
+		if self.spliceWindowOn == 1:
 			depth = self.startDepth 
 			pos = self.SPrulerStartDepth 
 
-			if self.timeseries_flag == False :
+			if self.timeseries_flag == False:
 				dc.DrawText("Depth", self.splicerX - 35, self.startDepth - 45)
 				dc.DrawText(rulerUnitsStr, self.splicerX - 35, self.startDepth - 35)
-			else :
+			else:
 				dc.DrawText("Age", self.splicerX - 35, self.startDepth - 45)
 				dc.DrawText("(Ma)", self.splicerX - 35, self.startDepth - 35)
 
 			dc.DrawLines(((self.splicerX, 0), (self.splicerX, self.Height))) # depth axis
 			self.SPrulerHeight = self.Height - self.startDepth
 			
-			while True :
+			while True:
 				adjPos = pos * unitAdjFactor
 				dc.DrawLines(((self.splicerX - 10, depth), (self.splicerX, depth)))
 				wid, hit = dc.GetTextExtent(str(adjPos))
@@ -1132,7 +1165,7 @@ class DataCanvas(wxBufferedWindow):
 				dc.DrawLines(((self.splicerX - 5, depth), (self.splicerX, depth)))
 				depth = depth + (self.rulerTickRate * self.length) / 2 
 				pos = pos + self.rulerTickRate * 2
-				if depth > self.Height :
+				if depth > self.Height:
 					break
 
 			self.SPrulerEndDepth = pos + 2.0 
@@ -1140,9 +1173,9 @@ class DataCanvas(wxBufferedWindow):
 			dc.DrawLines(((self.splicerX, depth), (self.Width, depth)))
 
 		depth = self.startDepth - 20
-		if self.spliceWindowOn == 1 :
+		if self.spliceWindowOn == 1:
 			dc.DrawLines(((self.compositeX, depth), (self.splicerX - 50, depth)))
-		else :
+		else:
 			dc.DrawLines(((self.compositeX, depth), (self.Width, depth)))
 
 
@@ -1160,30 +1193,42 @@ class DataCanvas(wxBufferedWindow):
 		startX = self.GetHoleStartX(holeName, holeType)
 		rangeMax = startX + self.holeWidth
 
-		if self.showHoleGrid == True :
-			if startX < self.splicerX :
+		# draw colored lines at boundaries, useful for debugging
+		# dc.SetPen(wx.Pen(wx.RED, 1))
+		# dc.DrawLine(startX, self.startDepth - 20, startX, self.Height) # left edge of hole plot
+		# dc.SetPen(wx.Pen(wx.GREEN, 1))
+		# dc.DrawLine(rangeMax, self.startDepth - 20, rangeMax, self.Height) # right edge of hole plot
+		# # right edge of next hole plot's info area (core number, affine shift type and distance)
+		# dc.SetPen(wx.Pen(wx.YELLOW, 1))
+		# dc.DrawLine(rangeMax + self.plotLeftMargin - 1, self.startDepth - 20, rangeMax + self.plotLeftMargin - 1, self.Height)
+		# dc.SetPen(wx.Pen(wx.BLUE, 1))
+		# dc.DrawLine(startX, self.startDepth - 20, rangeMax + self.plotLeftMargin, self.startDepth - 20) # top of hole plot
+		# dc.DrawLine(startX, self.Height, rangeMax + self.plotLeftMargin, self.Height) # bottom of hole plot...obscured by horz scrollbar
+
+		if self.showHoleGrid == True:
+			if startX < self.splicerX:
 				dc.SetPen(wx.Pen(self.colorDict['foreground'], 1, style=wx.DOT))
 				dc.DrawLines(((startX, self.startDepth - 20), (startX, self.Height)))
-			if smoothed >= 5 :
+			if smoothed >= 5:
 				dc.SetPen(wx.Pen(self.colorDict['foreground'], 1, style=wx.DOT))
 				rangeMax = self.splicerX + (self.holeWidth * 2) + 150
 				dc.DrawLines(((rangeMax, self.startDepth - 20), (rangeMax, self.Height)))
 
 		holeCoreCount = holeInfo[8] 
 
-		if holeType == "Natural Gamma" :
+		if holeType == "Natural Gamma":
 			holeType = "NaturalGamma"
 
 		if smoothed == 5 or smoothed == 6 or smoothed == 7:
 			holeType = 'log'
 			
 		overlapped_flag = False
-		if self.pressedkeyD == 1 :
-			if self.selectedHoleType == holeInfo[2] :
-				if prevHoleType != holeType :
+		if self.pressedkeyD == 1:
+			if self.selectedHoleType == holeInfo[2]:
+				if prevHoleType != holeType:
 					self.selectedStartX = startX 
 					self.selectedCount = 0 
-				else :
+				else:
 					overlapped_flag = True 
 					self.selectedCount += 1 
 
@@ -1251,26 +1296,26 @@ class DataCanvas(wxBufferedWindow):
 		
 		# for each core in hole, draw if visible - determined in self.DrawCoreGraph()
 		affine = 0.0
-		for i in range(len_hole) : 
+		for i in range(len_hole): 
 			coreInfo = hole[i + 1]
 			# coreInfo indices:
 			# 0:corename, 1:sectionMin, 2:sectionMax, 3:dataMin, 4:dataMax, 5:affine offset,
 			# 6:squish (ELD compression), 7:? (annotation?), 8:'0'?, 9:section depth list, 10:list of depth/data tuples
 			#print "   coredata = {}".format(coreInfo[:10])
 
-			if self.CurrentSpliceCore == self.coreCount :
+			if self.CurrentSpliceCore == self.coreCount:
 				spliceflag = 1	
 
-			for autoHole in self.autocoreNo : 
-				if autoHole == self.HoleCount :
+			for autoHole in self.autocoreNo: 
+				if autoHole == self.HoleCount:
 					spliceflag = 2	
 					break
-				elif self.parent.autoPanel.ApplyFlag == 1 :
+				elif self.parent.autoPanel.ApplyFlag == 1:
 					spliceflag = 2	
 
 			affine = self.DrawCoreGraph(dc, self.coreCount, startX, holeInfo, coreInfo, smoothed, spliceflag, drawComposite, affine) 
 
-			if overlapped_flag == True :
+			if overlapped_flag == True:
 				self.DrawCoreGraph(dc, self.coreCount, self.selectedStartX, holeInfo, coreInfo, -1, 0, 1, 0.0) 
 
 			spliceflag = 0 
@@ -1286,15 +1331,24 @@ class DataCanvas(wxBufferedWindow):
 
 			self.coreCount = self.coreCount + 1
 
-		# DRAWING TITLE
+		# Draw hole info above hole plot area. Three lines: hole ID, hole datatype, and hole data range.
+		# Uses self.holeInfoFont, which is slightly smaller than self.stdFont to accommodate three lines
+		# in available space.
 		dc.SetPen(wx.Pen(self.colorDict['foreground'], 1))
 		if (drawComposite and smoothed == 0) or smoothed == 1:
-			dc.DrawText("Leg: " + holeInfo[1] + " Site: " + holeInfo[0] + " Hole: " + holeInfo[7], rangeMax, 5) 
-			dc.DrawText(holeInfo[2] + ", Range: " + str(holeInfo[5]) + ":" + str(holeInfo[6]), rangeMax, 25)
-		if smoothed >= 5 :
+			dc.SetFont(self.holeInfoFont)
+			holeInfo_x = rangeMax
+			holeInfo_y = 3
+			hiLineSpacing = 13 # fudge factor, looks good on Win and Mac
+			dc.DrawText(holeInfo[1] + "-" + holeInfo[0] + holeInfo[7], holeInfo_x, holeInfo_y) # hole ID
+			dc.DrawText(holeInfo[2], holeInfo_x, holeInfo_y + hiLineSpacing) # hole datatype
+			rangeStr = "Range: {} : {}".format(str(holeInfo[5]), str(holeInfo[6]))
+			dc.DrawText(rangeStr, holeInfo_x, holeInfo_y + hiLineSpacing * 2) # range
+			dc.SetFont(self.stdFont) # reset to standard font
+		if smoothed >= 5: # Log column, currently unused.
 			title_pos = self.splicerX + (self.holeWidth * 2) + (50 * 2) + 50
 			# rangeMax
-			dc.DrawText("Leg: " + holeInfo[1] + " Site: " + holeInfo[0] + " Hole: " + holeInfo[7], title_pos, 5)
+			dc.DrawText(holeInfo[1] + "-" + holeInfo[0] + holeInfo[7], title_pos, 5)
 			dc.DrawText("Log, Range: " + str(holeInfo[5]) + ":" + str(holeInfo[6]), title_pos, 25)
 
 		return holeType
@@ -1413,8 +1467,8 @@ class DataCanvas(wxBufferedWindow):
 		whiteBrush = wx.Brush(wx.WHITE)
 		dc.SetPen(whitePen)
 		dc.SetBrush(whiteBrush)
-		startx = self.splicerX + 50 # beginning of splice plot area
-		endx = self.splicerX + 100 + self.spliceHoleWidth * 2 # right end of splice guide area
+		startx = self.splicerX + self.plotLeftMargin # beginning of splice plot area
+		endx = startx + (self.plotLeftMargin + self.holeWidth) * 2 # right end of splice guide area
 		ycoord = self.getSpliceCoord(tie.depth())
 		circlex = startx + self.spliceHoleWidth
 		namestr = tie.getName()
@@ -1443,7 +1497,7 @@ class DataCanvas(wxBufferedWindow):
 		
 		dc.DrawText(namestr, namex, ycoord - (tie.TIE_CIRCLE_RADIUS + 12))
 		
-	def DrawSpliceInterval(self, dc, interval, drawing_start, startX, smoothed):
+	def DrawSpliceInterval(self, dc, interval, drawing_start, startX, smoothed, clip_rect):
 		interval.coreinfo.coredata = self.getCorePointData(interval.coreinfo.hole, interval.coreinfo.holeCore, interval.coreinfo.type)
 		if len(interval.coreinfo.coredata) == 0: # data isn't enabled+loaded
 			ypos = self.getSpliceCoord(interval.getTop() + (interval.getBot() - interval.getTop())/2.0) # draw at middle of interval
@@ -1459,11 +1513,14 @@ class DataCanvas(wxBufferedWindow):
 		self._UpdateSpliceRange(rangemin, rangemax)
 		self._SetSpliceRangeCoef(smoothed)
 		
+		if not self.showOutOfRangeData:
+			dc.SetClippingRegion(clip_rect.x, clip_rect.y, clip_rect.width, clip_rect.height)
+
 		# as loaded or created on the spot, intervals with affine shifts work well, but all hell breaks
 		# loose when a core with an interval in the splice is shifted...listener/update?
 		intdata = [pt for pt in interval.coreinfo.coredata if pt[0] >= interval.getTop() and pt[0] <= interval.getBot()]
 		screenPoints = self.GetScreenPoints(intdata, drawing_start, startX)
-				
+		
 		usScreenPoints = [] # unsmoothed screenpoints 
 		drawUnsmoothed = self.GetSmoothType(datatype) == 2 # 2 == draw both Smooth & Unsmooth data
 		if drawUnsmoothed:
@@ -1472,9 +1529,6 @@ class DataCanvas(wxBufferedWindow):
 			usScreenPoints = self.GetScreenPoints(smoothdata, drawing_start, startX)
 
 		selected = (interval == self.parent.spliceManager.getSelected())
-		if selected:
-			for tie in self.parent.spliceManager.getTies():
-				self.DrawSpliceIntervalTie(dc, tie) 
 		if len(screenPoints) >= 1:
 			dc.SetPen(wx.Pen(wx.GREEN, 2)) if selected else	dc.SetPen(wx.Pen(self.colorDict['splice'], 1)) 
 			dc.DrawLines(screenPoints) if (len(screenPoints) > 1) else dc.DrawPoint(screenPoints[0][0], screenPoints[0][1])	
@@ -1487,7 +1541,13 @@ class DataCanvas(wxBufferedWindow):
 				dc.DrawLines(usScreenPoints) if (len(usScreenPoints) > 1) else dc.DrawPoint(usScreenPoints[0][0], usScreenPoints[0][1])	
 			else:
 				print "Can't draw unsmoothed {} data over smoothed, it contains 0 points".format(interval.coreinfo.getName())
-			
+		
+		if not self.showOutOfRangeData:
+			dc.DestroyClippingRegion()
+
+		if selected:
+			for tie in self.parent.spliceManager.getTies():
+				self.DrawSpliceIntervalTie(dc, tie) 
 		self.DrawIntervalEdgeAndName(dc, interval, drawing_start, startX)
 		
 	def GetScreenPoints(self, dataPoints, drawingStart, startX):
@@ -1522,14 +1582,27 @@ class DataCanvas(wxBufferedWindow):
 			self.DrawSpliceInfo(dc)
 			
 			drawing_start = self.SPrulerStartDepth - 5.0
-			startX = self.splicerX + 50
+			startX = self.splicerX + self.plotLeftMargin
+			clip_y = self.startDepth - 20
+			clip_height = self.Height - clip_y
+			clip_rect = wx.Rect(x=startX, y=clip_y, width=self.holeWidth + self.plotLeftMargin, height=clip_height)
 			for si in self.parent.spliceManager.getIntervalsInRange(drawing_start, self.SPrulerEndDepth):
-				self.DrawSpliceInterval(dc, si, drawing_start, startX, smoothed)
-				if si == self.parent.spliceManager.getSelected():
-					self.DrawSelectedSpliceGuide(dc, si, drawing_start, startX + self.holeWidth)
+				self.DrawSpliceInterval(dc, si, drawing_start, startX, smoothed, clip_rect)
+			if self.parent.spliceManager.hasSelection():
+				selected_x = startX + self.holeWidth + self.plotLeftMargin
+				# draw debug guides for selected core plot, immediately to right of splice
+				# dc.SetPen(wx.Pen(wx.RED, 1))
+				# dc.DrawLine(selected_x, clip_y, selected_x, clip_y + clip_height)
+				# dc.DrawLine(selected_x + self.holeWidth + self.plotLeftMargin, clip_y, selected_x + self.holeWidth + self.plotLeftMargin, clip_y + clip_height)
+				if not self.showOutOfRangeData:
+					dc.SetClippingRegion(x=selected_x, y=clip_y, width=self.holeWidth + self.plotLeftMargin, height=clip_height)
+				self.DrawSelectedSpliceGuide(dc, self.parent.spliceManager.getSelected(), drawing_start, startX + self.holeWidth)
+				if not self.showOutOfRangeData:
+					dc.DestroyClippingRegion()
+
 		else:
 			ypos = self.getSpliceCoord(self.SPrulerStartDepth)
-			dc.DrawText("Drag a core from the left to start a splice.", self.splicerX + 20, ypos)
+			dc.DrawText("Drag a core from the left to start a splice.", self.splicerX + 20, ypos + 20)
 					
 		self.DrawAlternateSplice(dc, hole, smoothed)
 		
@@ -1583,27 +1656,27 @@ class DataCanvas(wxBufferedWindow):
 				holeInfo = hole[0]
 				forcount = holeInfo[8] 
 				index = 0
-				for i in range(forcount) : 
+				for i in range(forcount): 
 					holedata = hole[i + 1]
-					if index < splicesize :
+					if index < splicesize:
 						coreData = holedata[10]
 						prevydepth = 0.0
 						ba = 0.0
 
-						for r in coreData :
+						for r in coreData:
 							y, x = r
 							depth = 0.0
-							for rateItem in self.AgeYRates :
+							for rateItem in self.AgeYRates:
 								ydepth, ba, bn = rateItem
-								if y > prevydepth and y <= ydepth :
+								if y > prevydepth and y <= ydepth:
 									depth = ydepth
 									break
 								prevydepth = ydepth
-							if depth != 0.0 :
+							if depth != 0.0:
 								y = (ba * y) / depth
 								#self.prevDepth = depth
-								y = int(100.0 * y) / 100.0;
-							else :
+								y = int(100.0 * y) / 100.0
+							else:
 								#y = (ba * y) / self.prevDepth
 								y = 0.0
 
@@ -1614,7 +1687,7 @@ class DataCanvas(wxBufferedWindow):
 
 	def DrawAgeSpliceCore(self, dc, index, coreData, smoothed, annotation):
 		dc.SetPen(wx.Pen(self.colorDict['splice'], 1))
-		if smoothed == 2 :
+		if smoothed == 2:
 			dc.SetPen(wx.Pen(self.colorDict['smooth'], 1))
 
 		splicelines = []
@@ -1630,23 +1703,23 @@ class DataCanvas(wxBufferedWindow):
 		ba = 0.0
 
 		startX = self.splicerX + 50
-		if len(self.AgeYRates) > 0 :
-			for r in coreData :
+		if len(self.AgeYRates) > 0:
+			for r in coreData:
 				y, x = r
-				if y < self.firstPntDepth :
+				if y < self.firstPntDepth:
 					continue
 
 				depth = 0.0
 				prevydepth = self.firstPntDepth 
-				for rateItem in self.AgeYRates :
+				for rateItem in self.AgeYRates:
 					ydepth, ba, bn = rateItem
-					if y > prevydepth and y <= ydepth :
+					if y > prevydepth and y <= ydepth:
 						depth = ydepth
 						break
 					prevydepth = ydepth
 					prevAge = ba
 
-				if depth != 0.0 :
+				if depth != 0.0:
 					deltaAge = ba - prevAge 
 					deltaDepth = ydepth - prevydepth 
 					y = (deltaAge / deltaDepth) * (y - prevydepth) + prevAge
@@ -1655,49 +1728,49 @@ class DataCanvas(wxBufferedWindow):
 				sy = self.startAgeDepth + (y - self.SPrulerStartAgeDepth) * (self.spliceYLength / self.gap)
 				x = x - self.minRange
 				sx = (x * self.coefRangeSplice) + startX
-				if si > 0 : 
-					if self.prevDepth != depth :
+				if si > 0: 
+					if self.prevDepth != depth:
 						self.AgeOffset = spy - sy
 					sy = sy + self.AgeOffset
 					splicelines.append((spx, spy, sx, sy))
-				else :
+				else:
 					si = si + 1 
 					sy = sy + self.AgeOffset
 					
 				spx = sx
 				spy = sy
 				self.prevDepth = depth
-		else :
-			for r in coreData :
+		else:
+			for r in coreData:
 				y, x = r
-				if y < self.firstPntDepth :
+				if y < self.firstPntDepth:
 					continue
 				y = y + self.AdjustAgeDepth
 				sy = self.startAgeDepth + (y - self.SPrulerStartAgeDepth) * (self.spliceYLength / self.gap)
 				x = x - self.minRange
 				sx = (x * self.coefRangeSplice) + startX 
-				if si > 0 : 
+				if si > 0: 
 					splicelines.append((spx, spy, sx, sy))
-				else :
+				else:
 					si = si + 1 
 				spx = sx
 				spy = sy
 
 		x = 0
 		y = 0
-		for r in splicelines :
+		for r in splicelines:
 			px, py, x, y = r
 			dc.DrawLines(((px, py), (x, y))) 
 
-		if y > 0 and smoothed < 3 : 
+		if y > 0 and smoothed < 3: 
 			dc.SetPen(wx.Pen(self.colorDict['foreground'], 1))
-			if len(annotation) > 0 :
+			if len(annotation) > 0:
 				dc.DrawText(annotation, startX - 20, y - 20)
 				dc.DrawLines(((startX - 20, y), (startX, y)))
-			if self.isLogMode == 0 :
+			if self.isLogMode == 0:
 				dc.DrawLines(((x - 10, y), (x + 10, y))) 
 
-		if y < self.Height :
+		if y < self.Height:
 			return True
 
 		return False 
@@ -1706,28 +1779,28 @@ class DataCanvas(wxBufferedWindow):
 	def DrawSpliceCore(self, dc, index, holedata, smoothed, hole_core):
 		coreData = holedata[10]
 		annotation = holedata[7]
-		if self.FirstDepth == 999.99 :
-			if coreData != [] : 
+		if self.FirstDepth == 999.99:
+			if coreData != []: 
 				self.FirstDepth, x = coreData[0]
 
 		dc.SetPen(wx.Pen(self.colorDict['splice'], 1))
 		log_number = 0
 
-		if smoothed == 2 :
+		if smoothed == 2:
 			dc.SetPen(wx.Pen(self.colorDict['smooth'], 1))
-		elif smoothed == 3 :
+		elif smoothed == 3:
 			dc.SetPen(wx.Pen(self.colorDict['log'], 1))
 			log_number = 1 
-		elif smoothed == 4 :
+		elif smoothed == 4:
 			dc.SetPen(wx.Pen(wx.Colour(0, 139, 0), 1))
 			log_number = 2 
-		elif smoothed == 5 :
+		elif smoothed == 5:
 			dc.SetPen(wx.Pen(wx.Colour(255, 184, 149), 1))
 			log_number = 1 
-		elif smoothed == 6 :
+		elif smoothed == 6:
 			dc.SetPen(wx.Pen(wx.Colour(255, 184, 149), 1))
 			log_number = 2 
-		elif smoothed == 7 :
+		elif smoothed == 7:
 			dc.SetPen(wx.Pen(wx.Colour(0, 139, 0), 1))
 			log_number = 2 
 
@@ -1747,52 +1820,52 @@ class DataCanvas(wxBufferedWindow):
 
 		startX = self.splicerX + (self.holeWidth * log_number) + 50 + (50 * log_number)
 		if smoothed != 4 or self.saganDepth == -1:
-			if smoothed != 4 :
-				if self.smooth_id == 2 and self.saganDepth != -1  :
+			if smoothed != 4:
+				if self.smooth_id == 2 and self.saganDepth != -1:
 					return
 				drawing_start = self.SPrulerStartDepth - 5.0
 
 				depthmin = 9999.0
 				depthmax = -9999.0
-				for r in coreData :
+				for r in coreData:
 					y, x = r
 					if y < depthmin:
 						depthmin = y
 					if y > depthmax:
 						depthmax = y
-					if y >= drawing_start and y <= self.SPrulerEndDepth :
+					if y >= drawing_start and y <= self.SPrulerEndDepth:
 						sy = self.startDepth + (y - self.SPrulerStartDepth) * (self.length / self.gap)
 						sx = x - self.minRange 
 						sx = (sx * self.coefRangeSplice) + startX  
-						if si > 0 : 
+						if si > 0: 
 							splicelines.append((spx, spy, sx, sy, 0))
-						if min > sx : 
+						if min > sx: 
 							min = sx
-						if max < sx : 
+						if max < sx: 
 							max = sx
 						spx = sx
 						spy = sy
 						si = si + 1
-			else :
+			else:
 				drawing_start = self.SPrulerStartDepth - 5.0
 
-				for r in coreData :
+				for r in coreData:
 					y, x = r
-					if y >= drawing_start and y <= self.SPrulerEndDepth :
+					if y >= drawing_start and y <= self.SPrulerEndDepth:
 						# brgtodo 6/4/2014 block duplicated below
-						if self.PreviewLog[0] == -1 :
+						if self.PreviewLog[0] == -1:
 							y = y + self.PreviewLog[3]
-						elif y >= self.PreviewLog[0] and y <= self.PreviewLog[1] :
-							#(m_eld - m_b) * m_rate + m_b;
+						elif y >= self.PreviewLog[0] and y <= self.PreviewLog[1]:
+							#(m_eld - m_b) * m_rate + m_b
 							y = (y - self.PreviewLog[0]) * self.PreviewLog[2] + self.PreviewLog[0]		
 							self.PreviewB = y
 							self.PreviewOffset = y - r[0]
 							self.PreviewBOffset = y - r[0]
-						elif self.PreviewLog[4] == -1 and y > self.PreviewLog[1] :
+						elif self.PreviewLog[4] == -1 and y > self.PreviewLog[1]:
 							y = y + self.PreviewOffset
-						elif self.PreviewLog[4] != -1 and y > self.PreviewLog[5] :
+						elif self.PreviewLog[4] != -1 and y > self.PreviewLog[5]:
 							y = y + self.PreviewOffset
-						elif y >= self.PreviewLog[1] and y <= self.PreviewLog[5] :
+						elif y >= self.PreviewLog[1] and y <= self.PreviewLog[5]:
 							y = y + self.PreviewBOffset
 							y = (y - self.PreviewB) * self.PreviewLog[6] + self.PreviewB		
 							self.PreviewOffset = y - r[0]
@@ -1800,11 +1873,11 @@ class DataCanvas(wxBufferedWindow):
 						sy = self.startDepth + (y - self.SPrulerStartDepth) * (self.length / self.gap)
 						sx = x - self.minRange 
 						sx = (sx * self.coefRangeSplice) + startX
-						if si > 0 : 
+						if si > 0: 
 							splicelines.append((spx, spy, sx, sy, 0))
-						if min > sx : 
+						if min > sx: 
 							min = sx
-						if max < sx : 
+						if max < sx: 
 							max = sx
 						spx = sx
 						spy = sy 
@@ -1814,39 +1887,39 @@ class DataCanvas(wxBufferedWindow):
 			x = 0
 			y = 0
 
-			if self.DiscretePlotMode == 0 :
-				for r in splicelines :
+			if self.DiscretePlotMode == 0:
+				for r in splicelines:
 					px, py, x, y, f = r
 					dc.DrawLines(((px, py), (x, y))) 
-			else :
-				for r in splicelines :
+			else:
+				for r in splicelines:
 					px, py, x, y, f = r
 					dc.DrawCircle(px, py, self.DiscretetSize)
-		else : 
+		else: 
 			lead = self.saganDepth - self.parent.winLength
 			lag = self.saganDepth + self.parent.winLength
 
 			drawing_start = self.SPrulerStartDepth - 5.0
-			for r in coreData :
+			for r in coreData:
 				y, x = r
-				if y >= drawing_start and y <= self.SPrulerEndDepth :
+				if y >= drawing_start and y <= self.SPrulerEndDepth:
 					f = 0
-					if y >= lead and y <= lag :
+					if y >= lead and y <= lag:
 						f = 1
 					# brgtodo 6/4/2014 duplicate block above
-					if self.PreviewLog[0] == -1 :
+					if self.PreviewLog[0] == -1:
 						y = y + self.PreviewLog[3]
-					elif y >= self.PreviewLog[0] and y <= self.PreviewLog[1] :
-						#(m_eld - m_b) * m_rate + m_b;
+					elif y >= self.PreviewLog[0] and y <= self.PreviewLog[1]:
+						#(m_eld - m_b) * m_rate + m_b
 						y = (y - self.PreviewLog[0]) * self.PreviewLog[2] + self.PreviewLog[0]		
 						self.PreviewB = y
 						self.PreviewOffset = y - r[0]
 						self.PreviewBOffset = y - r[0]
-					elif self.PreviewLog[4] == -1 and y > self.PreviewLog[1] :
+					elif self.PreviewLog[4] == -1 and y > self.PreviewLog[1]:
 						y = y + self.PreviewOffset
-					elif self.PreviewLog[4] != -1 and y > self.PreviewLog[5] :
+					elif self.PreviewLog[4] != -1 and y > self.PreviewLog[5]:
 						y = y + self.PreviewOffset
-					elif y >= self.PreviewLog[1] and y <= self.PreviewLog[5] :
+					elif y >= self.PreviewLog[1] and y <= self.PreviewLog[5]:
 						y = y + self.PreviewBOffset
 						y = (y - self.PreviewB) * self.PreviewLog[6] + self.PreviewB		
 						self.PreviewOffset = y - r[0]
@@ -1854,11 +1927,11 @@ class DataCanvas(wxBufferedWindow):
 					sy = self.startDepth + (y - self.SPrulerStartDepth) * (self.length / self.gap)
 					sx = x - self.minRange 
 					sx = (sx * self.coefRangeSplice) + startX
-					if si > 0 : 
+					if si > 0: 
 						splicelines.append((spx, spy, sx, sy, f)) # f here vs 0 above is only difference
-					if min > sx : 
+					if min > sx: 
 						min = sx
-					if max < sx : 
+					if max < sx: 
 						max = sx
 					spx = sx
 					spy = sy 
@@ -1868,64 +1941,64 @@ class DataCanvas(wxBufferedWindow):
 			x = 0
 			y = 0
 
-			if self.DiscretePlotMode == 0 :
-				for r in splicelines :
+			if self.DiscretePlotMode == 0:
+				for r in splicelines:
 					px, py, x, y, f = r
-					if f == 1 :
+					if f == 1:
 						dc.SetPen(wx.Pen(wx.Colour(0, 191, 255), 1))
-					else :
+					else:
 						#dc.SetPen(wx.Pen(self.colorDict['mudlineAdjust'], 1))
 						dc.SetPen(wx.Pen(wx.Colour(255, 184, 149), 1))
 					dc.DrawLines(((px, py), (x, y))) 
-			else :
-				for r in splicelines :
+			else:
+				for r in splicelines:
 					px, py, x, y, f = r
-					if f == 1 :
+					if f == 1:
 						dc.SetPen(wx.Pen(wx.Colour(0, 191, 255), 1))
-					else :
+					else:
 						#dc.SetPen(wx.Pen(self.colorDict['mudlineAdjust'], 1))
 						dc.SetPen(wx.Pen(wx.Colour(255, 184, 149), 1))
 					dc.DrawCircle(px, py, self.DiscretetSize)			
 
-		if y > 0 and smoothed < 3 : 
+		if y > 0 and smoothed < 3: 
 			dc.SetPen(wx.Pen(self.colorDict['foreground'], 1))
-			if len(annotation) > 0 :
+			if len(annotation) > 0:
 				dc.DrawText(annotation, startX - 20, y - 20)
 				dc.DrawLines(((startX - 20, y), (startX, y)))
-			else :
+			else:
 				dc.DrawText(hole_core, startX - 20, y - 20)
 				dc.DrawLines(((startX - 20, y), (startX, y)))
-			if self.isLogMode == 0 :
+			if self.isLogMode == 0:
 				dc.DrawLines(((x - 10, y), (x + 10, y))) 
 		elif y > 0 and smoothed == 3:
-			if len(annotation) > 0 :
+			if len(annotation) > 0:
 				dc.DrawText(annotation, startX - 20, y - 20)
 				dc.SetPen(wx.Pen(self.colorDict['foreground'], 1))
 				dc.DrawLines(((startX - 20, y), (startX, y)))
-			else :
+			else:
 				dc.DrawText(hole_core, startX - 20, y - 20)
 				dc.SetPen(wx.Pen(self.colorDict['foreground'], 1))
 				dc.DrawLines(((startX - 20, y), (startX, y)))
-		elif y > 0 and smoothed == 7 :
+		elif y > 0 and smoothed == 7:
 			dc.SetPen(wx.Pen(self.colorDict['foreground'], 1))
-			if len(annotation) > 0 :
+			if len(annotation) > 0:
 				dc.DrawText(annotation, startX - 20, y - 20)
 				dc.DrawLines(((startX - 20, y), (startX, y)))
 				dc.DrawLines(((x - 10, y), (x + 10, y))) 
-			else :
+			else:
 				dc.DrawText(hole_core, startX - 20, y - 20)
 				dc.DrawLines(((startX - 20, y), (startX, y)))
 				dc.DrawLines(((x - 10, y), (x + 10, y))) 
 
-		if smoothed < 3 : 
-			for r in splicelines :
+		if smoothed < 3: 
+			for r in splicelines:
 				l = []
 				#l.append( (index, startX, r[1], self.holeWidth+40, y-r[1]) )
 				l.append((index, min, r[1], max - min, y - r[1], startX, self.holeWidth + 40))
 				self.DrawData["SpliceArea"].append(l)
 				break
-		elif smoothed == 3 :
-			for r in splicelines :
+		elif smoothed == 3:
+			for r in splicelines:
 				l = []
 				#l.append( (index, startX, r[1], self.holeWidth+40, y-r[1]) )
 				l.append((index, min, r[1], max - min, y - r[1], startX, self.holeWidth + 40))
@@ -1937,57 +2010,57 @@ class DataCanvas(wxBufferedWindow):
 	def DrawStratCore(self, dc, spliceflag):
 		startdepth = self.rulerStartDepth
 		enddepth = self.rulerEndDepth 
-		if spliceflag == True :
+		if spliceflag == True:
 			startdepth = self.SPrulerStartDepth
 			enddepth = self.SPrulerEndDepth 
 
 		splice_x = self.holeWidth * 0.5 
-		if spliceflag == True :
+		if spliceflag == True:
 			splice_x = self.spliceHoleWidth * 0.75 
 		for data in self.StratData:
 			for r in data:
 				order, hole, name, label, start, stop, rawstart, rawstop, age, type = r
 				flag = 0
-				if stop >= startdepth and start < startdepth :
+				if stop >= startdepth and start < startdepth:
 					start = startdepth 
 					flag = 1
 
-				if start >= startdepth and start <= enddepth :
-					if type == 0 :	#DIATOMS 
+				if start >= startdepth and start <= enddepth:
+					if type == 0:	#DIATOMS 
 						dc.SetPen(wx.Pen(self.colorDict['diatom'], 1))
-					elif type == 1 : #RADIOLARIA 
+					elif type == 1: #RADIOLARIA 
 						dc.SetPen(wx.Pen(self.colorDict['rad'], 1))
-					elif type == 2 : #FORAMINIFERA 
+					elif type == 2: #FORAMINIFERA 
 						dc.SetPen(wx.Pen(self.colorDict['foram'], 1))
-					elif type == 3 : #NANNOFOSSILS 
+					elif type == 3: #NANNOFOSSILS 
 						dc.SetPen(wx.Pen(self.colorDict['nano'], 1))
-					elif type == 4 : #PALEOMAG 
+					elif type == 4: #PALEOMAG 
 						dc.SetPen(wx.Pen(self.colorDict['paleomag'], 1))
 
 					start = self.startDepth + (start - startdepth) * (self.length / self.gap)
 					stop = self.startDepth + (stop - startdepth) * (self.length / self.gap)
 					#middle = start + (stop -start) / 2.0
 
-					if spliceflag == True :
+					if spliceflag == True:
 						#x = self.splicerX + splice_x 
 						#x = x + 20 
 						x = self.splicerX + 50 - 22
 						dc.DrawText(label, x, start)
 						x = x + 22 
-						if flag == 0 :
+						if flag == 0:
 							dc.DrawLines(((x - 5, start), (x + 5, start))) 
 						dc.DrawLines(((x, start), (x, stop))) 
 						dc.DrawLines(((x - 5, stop), (x + 5, stop))) 
-					else :
+					else:
 						#x = self.WidthsControl[hole] + splice_x
 						# todo: get hole min X based on hole name + type using self.GetHoleStartX()
 						# instead of hole index - then self.WidthsControl can become a dict keyed
 						# on hole name + type instead of awkward (holeStartX, holeKey) tuple
 						x = self.WidthsControl[hole][0] - 22 
-						if self.splicerX > (x + 70) :
+						if self.splicerX > (x + 70):
 							dc.DrawText(label, x, start)
 							x = x + 22 
-							if flag == 0 :
+							if flag == 0:
 								dc.DrawLines(((x - 5, start), (x + 5, start))) 
 							dc.DrawLines(((x, start), (x, stop))) 
 							dc.DrawLines(((x - 5, stop), (x + 5, stop)))
@@ -2033,23 +2106,23 @@ class DataCanvas(wxBufferedWindow):
 		sections = holedata[9]
 
 		# draw vertical dotted line separating splice from next splice hole (or core to be spliced)
-		if spliceflag == 1 :
+		if spliceflag == 1:
 			spliceholewidth = self.splicerX + self.holeWidth + 100
 			dc.SetPen(wx.Pen(self.colorDict['foreground'], 1, style=wx.DOT))
 			dc.DrawLines(((spliceholewidth, self.startDepth - 20), (spliceholewidth, self.Height)))
 
 		drawing_start = self.rulerStartDepth - 5.0
-		if spliceflag == 1 :
+		if spliceflag == 1:
 			drawing_start = self.SPrulerStartDepth - 5.0
-		elif drawComposite and smoothed == 2 : 
+		elif drawComposite and smoothed == 2: 
 			drawing_start = self.SPrulerStartDepth - 5.0
 			
 		coreTopY, coreBotY = coreData[0][0], coreData[-1][0]
-		# draw section boundaries
-		if self.pressedkeyS == 1 or self.showSectionDepths:
+		# Draw section tops. Assume bottom abuts next section top so no need to draw it.
+		if self.parent.sectionSummary and (self.pressedkeyS == 1 or self.showSectionDepths):
 			if drawComposite and smoothed != 2 and (self.depthVisible(coreTopY, drawing_start, self.rulerEndDepth) or self.depthVisible(coreBotY, drawing_start, self.rulerEndDepth)):
 				dc.SetPen(wx.Pen(self.colorDict['foreground'], 1, style=wx.DOT))
-				shiftDistance = self.parent.affineManager.getShiftDistance(hole, coreno)
+				shiftDistance = self.parent.affineManager.getShiftDistance(hole, coreno) if self.parent.affineManager.hasShift(hole, coreno) else 0
 				secrows = self.parent.sectionSummary.getSectionRows(hole, coreno)
 				for secIndex, row in enumerate(secrows):
 					top = row.topDepth + shiftDistance
@@ -2059,14 +2132,14 @@ class DataCanvas(wxBufferedWindow):
 					coreSectionStr = "{}-{}".format(coreno, row.section)
 					dc.DrawText(coreSectionStr, startX + 2, y)
 					
-					if secIndex == len(secrows) - 1:
+					if secIndex == len(secrows) - 1: # draw bottom of last section
 						ybot = self.startDepth + (bot - self.rulerStartDepth) * (self.length / self.gap)
 						dc.DrawLines(((startX, ybot), (startX + self.holeWidth, ybot)))					
 
 		# draw affine shift arrow and distance centered on core
 		y_depth, x = coreData[0]
 		shiftInfoY = coreTopY + (coreBotY - coreTopY) / 2
-		if affine != 0 and y_depth >= drawing_start and y_depth <= self.rulerEndDepth :
+		if affine != 0 and y_depth >= drawing_start and y_depth <= self.rulerEndDepth:
 			dc.SetPen(wx.Pen(self.colorDict['foreground'], 1))
 			y = self.startDepth + (shiftInfoY - self.rulerStartDepth) * (self.length / self.gap)
 
@@ -2081,7 +2154,7 @@ class DataCanvas(wxBufferedWindow):
 				tribase2 = wx.Point(startX + 4, arrowY)
 				tribase3 = wx.Point(startX, arrowY + arrowheadAdjust)
 				dc.SetBrush(wx.Brush(self.colorDict['foreground']))
-				if affine > 0 :
+				if affine > 0:
 					dc.DrawPolygon((tribase3, tribase2, tribase1))
 				else:
 					dc.DrawPolygon((tribase3, tribase1, tribase2))
@@ -2105,6 +2178,16 @@ class DataCanvas(wxBufferedWindow):
 					parentY = self.getCoord(parentNearDepth)
 					parentTieX = parentNearDatum - self.minRange
 					parentTieX = (parentTieX * self.coefRange) + self.GetHoleStartX(parentCore.hole, holeType)
+
+					# save (hole + core, bounding rect) tuple for click/hover detection
+					rx = parentTieX if parentTieX < tieX else tieX
+					arrowRect = wx.Rect(rx, tieY - 5, abs(tieX - parentTieX), 10)
+					self.AffineTieArrows.append((hole+coreno, arrowRect))
+
+ 					# highlight tie arrow on mouseover
+					if self.MousePos and arrowRect.Inside(self.MousePos):
+						dc.SetPen(wx.Pen(wx.Colour(0, 255, 0))) # green
+
 					# dot on parent core, arrow to shifted core 				
 					dc.DrawCircle(parentTieX, parentY, 3)
 					arrowDir = 5 if parentTieX > tieX else -5
@@ -2113,214 +2196,191 @@ class DataCanvas(wxBufferedWindow):
 		coreColor = self.parent.affineManager.getShiftColor(hole, coreno)
 		dc.SetPen(wx.Pen(coreColor, 1))
 
-		log_number = 1;
+		log_number = 1
 		logsmoothed = smoothed
 
-		if smoothed == 3 :
+		if smoothed == 3:
 			dc.SetPen(wx.Pen(wx.Colour(238, 216, 174), 1))
 			smoothed = 1
-		elif smoothed == 2 :
+		elif smoothed == 2:
 			dc.SetPen(wx.Pen(self.colorDict['smooth'], 1))
-		elif smoothed == 5 :
+		elif smoothed == 5:
 			dc.SetPen(wx.Pen(self.colorDict['log'], 1))
 			log_number = 2
 			smoothed = 2
-		elif smoothed == 6  :
+		elif smoothed == 6:
 			dc.SetPen(wx.Pen(self.colorDict['mudlineAdjust'], 1))
 			log_number = 2
 			smoothed = 2
-		elif smoothed == 7 :
+		elif smoothed == 7:
 			dc.SetPen(wx.Pen(wx.Colour(238, 216, 174), 1))
 			log_number = 2
 			smoothed = 2
 
 		if squish != 100 or self.LogTieData != []:
 			self.ELDapplied = True
-			if smoothed == 0 :
+			if smoothed == 0:
 				dc.SetPen(wx.Pen(self.colorDict['eld'], 1))
 			# BLOCK
-			#else :
+			#else:
 			#dc.SetPen(wx.Pen(wx.Colour(238, 216, 174), 1))
 
-		if self.continue_flag == False :
+		if self.continue_flag == False:
 			#dc.SetPen(wx.Pen(wx.Colour(255, 193, 193), 1))
 			dc.SetPen(wx.Pen(wx.Colour(105, 105, 105), 1))
 
-		if quality == "1" :
+		if quality == "1":
 			dc.SetPen(wx.Pen(wx.Colour(105, 105, 105), 1))
 
-		if smoothed == -1 :
+		if smoothed == -1:
 			dc.SetPen(wx.Pen(self.overlapcolorList[self.selectedCount], 1))
 
 		lines = []
-		splicelines = []
+		# splicelines = []
 
 		# draw nodes
-		i = 0	
-		px = 0
-		py = 0
-
-		si = 0	
-		sx = 0
-		sy = 0
-		spx = 0
-		spy = 0
+		pointCount = 0
+		splicePointCount = 0
 		bottom = -1
 		log_min = 999.0
 		log_max = -999.0
-		spliceholewidth = self.splicerX + (self.holeWidth * log_number) + (50 * log_number) + 50
+		spliceholewidth = self.splicerX + (self.holeWidth + self.plotLeftMargin) * log_number + self.plotLeftMargin
 		y = 0
 		
 		scale = self.length / self.gap
 		for y,x in [cd for cd in coreData if cd[0] >= drawing_start]:
-			if spliceflag == 1 :
-				if y <= self.SPrulerEndDepth :
-					if bottom == -1 or y <= bottom : 
-						sy = self.startDepth + (y - self.SPrulerStartDepth) * scale
-						sx = x - self.minRange
-						sx = (sx * self.coefRange) + spliceholewidth 
-
-						if si > 0 : 
-							splicelines.append((spx, spy, sx, sy))
-						spx = sx
-						spy = sy
-						si = si + 1
-				elif y > self.SPrulerEndDepth:
-					break # no need to continue, this core and all below are out of view
+			# Obsolete, splice is drawn in DrawSplice()
+			# if spliceflag == 1:
+			# 	if y <= self.SPrulerEndDepth:
+			# 		if bottom == -1 or y <= bottom: 
+			# 			sy = self.startDepth + (y - self.SPrulerStartDepth) * scale
+			# 			sx = (x - self.minRange) * self.coefRange + spliceholewidth
+			# 			splicelines.append((sx,sy))
+			# 			splicePointCount += 1
+			# 	elif y > self.SPrulerEndDepth:
+			# 		break # no need to continue, this core and all below are out of view
 
 			if drawComposite:
-				if smoothed == 2 :
-					if y <= self.SPrulerEndDepth :
+				if smoothed == 2:
+					if y <= self.SPrulerEndDepth:
 						y = self.startDepth + (y - self.SPrulerStartDepth) * scale
-						x = x - self.minRange
-						x = (x * self.coefRange) + spliceholewidth
-
-						if i > 0 : 
-							lines.append((px, py, x, y))
-						if log_min > x :
+						x = (x - self.minRange) * self.coefRange + spliceholewidth
+						lines.append((x,y))
+						if log_min > x:
 							log_min = x
-						if log_max < x :
+						if log_max < x:
 							log_max = x
-						px = x
-						py = y
-						i = i + 1
+						pointCount += 1
 					elif y > self.SPrulerEndDepth:
 						break
-				else :
-					if y <= self.rulerEndDepth :
+				else:
+					if y <= self.rulerEndDepth:
 						y = self.startDepth + (y - self.rulerStartDepth) * scale
-						x = x - self.minRange
-						x = (x * self.coefRange) + startX 
-
-						if i > 0 : 
-							lines.append((px, py, x, y))
-						px = x
-						py = y
-						i = i + 1
-						#print "x = " + str(x) + " y = " + str(y) 
+						x = (x - self.minRange) * self.coefRange + startX
+						lines.append((x,y))
+						pointCount += 1
 					elif y > self.rulerEndDepth:
 						break
 
+		if pointCount == 0 and splicePointCount == 0:
+			return
+
+		# clip to plot area
+		if not self.showOutOfRangeData:
+			dc.SetClippingRegion(x=startX, y=self.startDepth - 20, width=self.holeWidth + self.plotLeftMargin, height=self.Height-(self.startDepth-20))
+
+		# draw lines
+		y = lines[-1][1] # deepest depth in core
+		if self.DiscretePlotMode == 0 and pointCount > 1:
+			dc.DrawLines(lines)
+		else:
+			for pt in lines:
+				dc.DrawCircle(pt[0], pt[1], self.DiscretetSize)
+
+		if not self.showOutOfRangeData:
+			dc.DestroyClippingRegion()
+
+		if smoothed == -1:
+			return
+
+		if y > 0 and quality == "1":
+			dc.DrawText("BAD CORE", startX - 50, y - 20)
+		#elif y > 0 and self.continue_flag == False:
+		#	dc.DrawText( "DISCRETE CORE", min, y-20)
+
+		if y > 0 and smoothed != 2:
+			dc.DrawText(str(coreno), startX - 20, y - 20)
+			dc.SetPen(wx.Pen(self.colorDict['foreground'], 1))
+			dc.DrawLines(((startX - 20, y), (startX, y))) 
+			if len(annotation) > 0:
+				dc.DrawText(annotation, startX - 35, y - 20)
+
+		# Obsolete, splice is drawn in DrawSplice()
+		# if smoothed == 1 and self.DiscretePlotMode == 0 and splicePointCount > 1:
+		# 	dc.DrawLines(splicelines)
+		# 	return
+		# else:
+		# 	for pt in splicelines:
+		# 		dc.DrawCircle(pt[0], pt[1], self.DiscretetSize)
+		# 	return
+
+		#min = min - startX
+		#max = max - startX
 		min_splice = min - self.minRangeSplice
 
-		if smoothed == 2 :
+		if smoothed == 2:
 			min = min - self.minRangeSplice
 			min = (min * self.coefRangeSplice) + startX 
 			max = max - self.minRangeSplice
 			max = (max * self.coefRangeSplice) + startX 
-		else :
+		else:
 			min = min - self.minRange
 			min = (min * self.coefRange) + startX 
 			max = max - self.minRange
 			max = (max * self.coefRange) + startX 
-		
-		# draw lines 
-		y = 0
-		if self.DiscretePlotMode == 0 :
-			for px, py, x, y in lines :
-				dc.DrawLines(((px, py), (x, y)))
-		else :
-			for r in lines :
-				px, py, x, y = r
-				dc.DrawCircle(px, py, self.DiscretetSize)
 
-		if smoothed == -1 :
-			return
-
-		if y > 0 and quality == "1" :
-			dc.DrawText("BAD CORE", startX - 50, y - 20)
-		#elif y > 0 and self.continue_flag == False :
-		#	dc.DrawText( "DISCRETE CORE", min, y-20)
-
-		if y > 0 and smoothed != 2 :
-			dc.DrawText(str(coreno), startX - 20, y - 20)
-			dc.SetPen(wx.Pen(self.colorDict['foreground'], 1))
-			dc.DrawLines(((startX - 20, y), (startX, y))) 
-			if len(annotation) > 0 :
-				dc.DrawText(annotation, startX - 35, y - 20)
-
-		if smoothed == 1 :
-			for r in splicelines :
-				px, py, x, y = r
-				dc.DrawLines(((px, py), (x, y))) 
-			return
+		# Highlight core on mouseover. If mouse pos happens to be within multiple
+		# cores' bounds, only draw for the first such core encountered.
+		# if len(lines) > 0:
+		# 	print("{}{} len lines = {}".format(hole, coreno, len(lines)))
+		if not self.highlightedCore and pointCount > 1:
+			hx = min
+			hy = lines[0][1]
+			wid = max - min
+			hit = y - lines[0][1]
+			# print("test rect = {}".format(wx.Rect(hx, hy, wid, hit)))
+			if wx.Rect(hx, hy, wid, hit).Inside(self.MousePos):
+				# print("   inside!")
+				curPen = dc.GetPen()
+				self.DrawHighlight(dc, hx, hy, wid, hit)
+				dc.SetPen(curPen)
+				self.highlightedCore = True # only highlight a single core
 
 
-		#min = min - startX
-		#max = max - startX
-
-		if smoothed == 2 :
-			if log_number != 2 :
-				for r in lines :
+		if smoothed == 2:
+			if log_number != 2:
+				for r in lines:
 					l = []
 					#l.append( (index, spliceholewidth, r[1], self.holeWidth+40, y-r[1]) )
 					l.append((index, min, r[1], max - min, y - r[1], startX, self.holeWidth + 40))
 					self.DrawData["SpliceArea"].append(l)
 					return
-			else :
-				for r in lines :
+			else:
+				for r in lines:
 					l = []
 					l.append((index, min, r[1], max - min, y - r[1], spliceholewidth, self.holeWidth + 40))
 					self.DrawData["LogArea"].append(l)
 					return
-	
-		else : 
-			for r in lines :
-				l = []
-				l.append((index, min, r[1], max - min, y - r[1], startX, self.holeWidth + 40, self.HoleCount))
-				#l.append( (index, startX, r[1], self.holeWidth+40, y-r[1]) )
-				self.DrawData["CoreArea"].append(l)
-				break
+		else:
+			if len(lines) > 0:
+				firstLine = lines[0]
+				coreDrawData = [(index, min, firstLine[1], max-min, y-firstLine[1], startX, self.holeWidth+40, self.HoleCount)]
+				self.DrawData["CoreArea"].append(coreDrawData)
 
 		lines = []
 
-		# draw CurrentSpliceCore
-		dc.SetPen(wx.Pen(wx.Colour(255, 130, 71), 1))
-		y = 0
-		for r in splicelines :
-			px, py, x, y = r
-			dc.DrawLines(((px, py), (x, y))) 
-
-		min = min + spliceholewidth - startX
-		max = max + spliceholewidth - startX 
-
-		if y > 0 :
-			#min_splice = (min_splice * self.coefRangeSplice) + startX 
-			#min_splice = min_splice + self.splicerX + self.spliceHoleWidth - startX
-			dc.DrawText(str(hole) + str(coreno), spliceholewidth - 20, y - 20)
-
-		for r in splicelines :
-			l = []
-			#l.append( (index, spliceholewidth, r[1], self.holeWidth+40, y-r[1]) )
-			l.append((index, min, r[1], max - min, y - r[1], spliceholewidth, self.holeWidth + 40))
-			self.DrawData["SpliceArea"].append(l)
-			break
-		splicelines = [] 
-
-		if self.hideTie == 1 :
-			return
-
-		if self.guideCore == index : 
+        # Draw guide core (movable core data superimposed on fixed core for comparison)
+		if self.guideCore == index:
 			i = 0	
 			px = 0
 			py = 0
@@ -2330,107 +2390,33 @@ class DataCanvas(wxBufferedWindow):
 
 			drawing_start = self.rulerStartDepth - 5.0
 
-			for data in self.GuideCore :
-				for r in data :
+			for data in self.GuideCore:
+				for r in data:
 					y, x = r
-					if y >= drawing_start and y <= self.rulerEndDepth :
+					if y >= drawing_start and y <= self.rulerEndDepth:
 						f = 0
-						if y >= lead and y <= lag : 
+						if y >= lead and y <= lag: 
 							f = 1
 						y = self.startDepth + (y - self.rulerStartDepth) * (self.length / self.gap)
-						x = x - self.minRange
-						x = (x * self.coefRange) + startX 
-						#if max < x :
-						#	max = x
-						if i > 0 :	 
+						x = ((x - self.minRange) * self.coefRange) + startX
+						if i > 0:
 							lines.append((px, py, x, y, f))
 						px = x
 						py = y
-						i = i + 1 
+						i = i + 1
 
 			#max = startX + self.holeWidth + 50 
 			max = startX + self.holeWidth / 2.0  
 			# draw lines 
-			if max < self.splicerX :
-				for r in lines :
+			if max < self.splicerX:
+				for r in lines:
 					px, py, x, y, f = r
-					if f == 1 : 
+					if f == 1:
 						dc.SetPen(wx.Pen(self.colorDict['corrWindow'], 1))
-					else : 
+					else: 
 						#dc.SetPen(wx.Pen(wx.Colour(0, 139, 0), 1))
 						dc.SetPen(wx.Pen(self.colorDict['guide'], 1))
 					dc.DrawLines(((px, py), (x, y))) 
-
-		lines = []
-
-		if self.guideSPCore == index : 
-			dc.SetBrush(wx.TRANSPARENT_BRUSH)
-			dc.SetPen(wx.Pen(wx.Colour(224, 255, 255), 1))
-			i = 0	
-			px = 0
-			py = 0
-			lead = self.spliceDepth - self.parent.winLength
-			lag = self.spliceDepth + self.parent.winLength
-
-			coefRangeGuide = self.coefRange 
-			modifiedType = "splice"
-			minRangeGuide = 0.0
-			for r in self.range :
-				if r[0] == modifiedType :
-					minRangeGuide = r[1]
-					if r[3] != 0.0 :
-						coefRangeGuide = self.holeWidth / r[3]
-					else :
-						coefRangeGuide = 0 
-					break
-
-			for data in self.SPGuideCore :
-				for r in data :
-					y, x = r
-					f = 0
-					if y >= lead and y <= lag : 
-						f = 1
-					y = self.startDepth + (y - self.SPrulerStartDepth) * (self.length / self.gap)
-					#x = x - self.minRange
-					x = x - minRangeGuide
-					x = (x * coefRangeGuide) + self.splicerX + 50
-					if i > 0 : 
-						lines.append((px, py, x, y, f))
-					px = x
-					py = y
-				i = i + 1 
-
-			# draw lines 
-			for r in lines :
-				px, py, x, y, f = r
-				if f == 1 : 
-					#dc.SetPen(wx.Pen(wx.Colour(0, 191, 255), 1))
-					dc.SetPen(wx.Pen(self.colorDict['corrWindow'], 1))
-				else : 
-					#dc.SetPen(wx.Pen(wx.Colour(224, 255, 255), 1))
-					dc.SetPen(wx.Pen(self.colorDict['guide'], 1))
-				dc.DrawLines(((px, py), (x, y))) 
-
-		lines = [] 
-
-		i = 0
-		if spliceflag == 2 and self.LogTieData == []  :
-			spliceholewidth = self.splicerX + (self.holeWidth * 2) + 150
-			drawing_start = self.rulerStartDepth - 5.0
-			for r in coreData :
-				y, x = r
-				if y >= drawing_start and y <= self.rulerEndDepth :
-					y = self.startDepth + (y - self.SPrulerStartDepth) * (self.length / self.gap)
-					x = x - self.minRange
-					x = (x * self.coefRange) + spliceholewidth
-					if i > 0 : 
-						lines.append((px, py, x, y))
-					px = x
-					py = y
-					i = i + 1 
-			for r in lines :
-				px, py, x, y = r
-				dc.DrawLines(((px, py), (x, y))) 
 
 		return affine
 
@@ -2444,10 +2430,9 @@ class DataCanvas(wxBufferedWindow):
 		dc.SetPen(wx.Pen(wx.Colour(0, 255, 0), 1))
 
 		x = self.splicerX - 270
-		if flag == 2 :
+		if flag == 2:
 			x = self.Width - 220
 
-		self.minData = -1
 		self.statusStr = self.statusStr + "Hole: " + coreInfo.hole + " Core: " + coreInfo.holeCore
 		dc.DrawText("Hole: " + coreInfo.hole + " Core: " + coreInfo.holeCore, x, self.startDepth)
 		dc.DrawText("Min: " + str(coreInfo.minData) + " Max: " + str(coreInfo.maxData), x, self.startDepth + 20)
@@ -2457,15 +2442,12 @@ class DataCanvas(wxBufferedWindow):
 		qualityStr += "Good" if coreInfo.quality == '0' else "Bad"
 		dc.DrawText(qualityStr, x, self.startDepth + 60) 
 
-		self.minData = coreInfo.minData
 		return (coreInfo.type, coreInfo.hole)
 
-	def DrawHighlight(self, dc):
-		if "HighlightCore" in self.DrawData:
-			tuple = self.DrawData["HighlightCore"]
-			x, y, wid, hit = tuple
-			dc.SetPen(wx.Pen(wx.Colour(192, 192, 192), 1, wx.DOT))
-			dc.DrawLines(((x - 2, y - 2), (x + wid + 2, y - 2), (x + wid + 2, y + hit + 2), (x - 2, y + hit + 2), (x - 2, y - 2)))
+	# Draw dashed rectangle around given bounds
+	def DrawHighlight(self, dc, x, y, wid, hit):
+		dc.SetPen(wx.Pen(wx.Colour(192, 192, 192), 1, wx.DOT))
+		dc.DrawLines(((x - 2, y - 2), (x + wid + 2, y - 2), (x + wid + 2, y + hit + 2), (x - 2, y + hit + 2), (x - 2, y - 2)))
 	
 	def DrawMouseInfo(self, dc, coreInfo, x, y, startx, flag, type):
 		dc.SetBrush(wx.TRANSPARENT_BRUSH)
@@ -2477,19 +2459,20 @@ class DataCanvas(wxBufferedWindow):
 		ycoord = self.getDepth(y) if x < self.splicerX else self.getSpliceDepth(y)
 		unroundedYcoord = ycoord
 		ycoord = round(ycoord, 3)
-		#if flag == 1 :
+		#if flag == 1:
 		#	dc.DrawText(str(ycoord), self.compositeX + 3, y - 5)
-		#else :
+		#else:
 		#	dc.DrawText(str(ycoord), self.splicerX + 3, y - 5)
 
+		# draw value of current mouse x position based on current core's datatype
 		tempx = 0.0
-		if type == "Natural Gamma" :
+		if type == "Natural Gamma":
 			type = "NaturalGamma"
-		for r in self.range :
-			if r[0] == type : 
-				if r[3] != 0.0 :
+		for r in self.range:
+			if r[0] == type: 
+				if r[3] != 0.0:
 					self.coefRange = self.holeWidth / r[3]
-				else :
+				else:
 					self.coefRange = 0
 				tempx = (x - startx) / self.coefRange + self.minData
 				tempx = round(tempx, 3)
@@ -2512,11 +2495,11 @@ class DataCanvas(wxBufferedWindow):
 		dc.SetFont(self.stdFont)
 		dc.SetPen(wx.Pen(wx.Colour(0, 255, 0), 1))
 		y = 0
-		if line == 1 :
+		if line == 1:
 			y = self.Height - 90
-		elif line == 2 :
+		elif line == 2:
 			y = self.Height - 70
-		elif line == 3 :
+		elif line == 3:
 			y = self.Height - 50
 		dc.DrawText(info, self.splicerX - 250, y)
 	
@@ -2538,10 +2521,10 @@ class DataCanvas(wxBufferedWindow):
 			startX += width
 		
 	def DrawColorLegend(self, dc):
-		if self.MainViewMode == True :
+		if self.MainViewMode == True:
 			paintgap = 50 
 			start = self.Width
-			if self.spliceWindowOn == 1 :
+			if self.spliceWindowOn == 1:
 				start = self.splicerX
 
 			y = self.Height - self.ScrollSize
@@ -2549,11 +2532,11 @@ class DataCanvas(wxBufferedWindow):
 			self._drawColorLegend(dc, start, y, itemList)
 
 			# todo: use _drawLegendItems() for all color legends
-			if self.spliceWindowOn == 1 :
+			if self.spliceWindowOn == 1:
 				dc.SetPen(wx.Pen(self.colorDict['splice'], 1))
 				dc.SetBrush(wx.Brush(self.colorDict['splice']))
 				paintgap = (self.Width - self.splicerX) / 5.0
-				if paintgap > 50 :
+				if paintgap > 50:
 					paintgap = 50 
 				start = self.splicerX
 				y = self.Height - self.ScrollSize
@@ -2571,7 +2554,7 @@ class DataCanvas(wxBufferedWindow):
 				dc.SetBrush(wx.Brush(self.colorDict['mudlineAdjust']))
 				dc.DrawRectangle(start, y, paintgap, self.ScrollSize)
 				dc.DrawText("mudline adjusted log", start, y)
-		else :
+		else:
 			dc.SetPen(wx.Pen(self.colorDict['paleomag'], 1))
 			dc.SetBrush(wx.Brush(self.colorDict['paleomag']))
 			paintgap = 80 
@@ -2599,11 +2582,11 @@ class DataCanvas(wxBufferedWindow):
 			dc.SetBrush(wx.Brush(self.colorDict['nano']))
 			dc.DrawRectangle(start, y, paintgap, self.ScrollSize)
 			dc.DrawText("nannofossils", start, y)
-			if self.spliceWindowOn == 1 :
+			if self.spliceWindowOn == 1:
 				dc.SetPen(wx.Pen(self.colorDict['splice'], 1))
 				dc.SetBrush(wx.Brush(self.colorDict['splice']))
 				paintgap = (self.Width - self.splicerX) / 3.0
-				if paintgap > 50 :
+				if paintgap > 50:
 					paintgap = 50 
 				start = self.splicerX
 				y = self.Height - self.ScrollSize
@@ -2617,22 +2600,35 @@ class DataCanvas(wxBufferedWindow):
 				dc.DrawText("sedimentation rate", start, y)
 
 	def Draw(self, dc):
+		# beginDrawTime = time.clock()
+
 		dc.BeginDrawing()
 		dc.SetBackground(wx.Brush(self.colorDict['background']))
 		dc.Clear() # make sure you clear the bitmap!
 
-		if self.WindowUpdate == 1 : 
+		# 3/18/2019: Attempt to debug double-drawing issue after initial Load
+		# of data, which seems to be fixed by clicking anywhere on the right-hand
+		# panels, resulting in noticeably faster response. Looks like OnMainMotion()
+		# is being called twice but thus far can't figure out why.
+		# print("Draw() {}".format(self.drawCount))
+		# self.drawCount += 1
+		# stk = traceback.format_stack()
+		# for thing in stk[len(stk) - 5:]:
+		# 	print("{}".format(thing.strip()))
+		# print("------\n")
+
+		if self.WindowUpdate == 1: 
 			self.Width, self.Height = self.parent.GetClientSizeTuple()
 			self.SetSize((self.Width, self.Height))
 				
 			self.parent.UpdateSize(self.Width, self.Height)
 
-			if self.CLOSEFLAG == 1 :
+			if self.CLOSEFLAG == 1:
 				self.Width = self.Width - 45 
 				self.sidePanel.SetPosition((self.Width, 0))
 				self.sidePanel.SetSize((45, self.Height))
 				self.sideNote.SetSize((45, self.Height))
-			else :
+			else:
 				self.Width = self.Width - self.sideTabSize
 				self.sidePanel.SetPosition((self.Width, 0))
 				self.sidePanel.SetSize((self.sideTabSize, self.Height))
@@ -2641,31 +2637,31 @@ class DataCanvas(wxBufferedWindow):
 			#self.eldPanel.SetPosition((self.Width, 50))
 			self.subSideNote.SetSize((self.sideTabSize - 20, self.Height))
 
-			if self.spliceWindowOn == 1 :
-				if self.splicerX <= self.compositeX :
+			if self.spliceWindowOn == 1:
+				if self.splicerX <= self.compositeX:
 					self.splicerX = self.Width * 8 / 10 + self.compositeX
-				if self.splicerX > (self.Width - 100) :
+				if self.splicerX > (self.Width - 100):
 					self.splicerX = self.Width - 100
-			else :
+			else:
 				self.splicerX = self.Width + 45
 			self.WindowUpdate = 0
 
 
-		if self.MainViewMode == True :
+		if self.MainViewMode == True:
 			self.DrawMainView(dc)
-		else :
+		else:
 			self.DrawAgeDepthView(dc)
 
 		# horizontal scroll bar
 		dc.SetBrush(wx.Brush(wx.Colour(205, 201, 201)))
 		dc.SetPen(wx.Pen(wx.Colour(205, 201, 201), 1))
 
-		if self.spliceWindowOn == 1 :
+		if self.spliceWindowOn == 1:
 			dc.DrawRectangle(self.compositeX, self.Height - self.ScrollSize, self.splicerX - 60 - self.compositeX, self.ScrollSize)
 			dc.DrawRectangle(self.Width - self.ScrollSize - 1, 0, self.ScrollSize, self.Height)
 			dc.DrawRectangle(self.splicerX, self.Height - self.ScrollSize, self.Width - self.splicerX, self.ScrollSize)
 			dc.DrawRectangle(self.splicerX - self.ScrollSize - 45, 0, self.ScrollSize, self.Height)
-		else :
+		else:
 			dc.DrawRectangle(self.compositeX, self.Height - self.ScrollSize, self.Width - 10 - self.compositeX, self.ScrollSize)
 			dc.DrawRectangle(self.Width - self.ScrollSize - 1, 0, self.ScrollSize, self.Height)
 
@@ -2687,13 +2683,13 @@ class DataCanvas(wxBufferedWindow):
 			x = x + self.splicerX - 40
 			dc.DrawBitmap(bmp, x, y, 1)
 
-		if self.mode == 1 : 
+		if self.mode == 1: 
 			self.statusStr = "Composite mode	 "
-		elif self.mode == 2 : 
+		elif self.mode == 2: 
 			self.statusStr = "Splice mode		 "
-		elif self.mode == 3 : 
+		elif self.mode == 3: 
 			self.statusStr = "Core-log matching mode		 "
-		elif self.mode == 4 : 
+		elif self.mode == 4: 
 			self.statusStr = "Age depth mode		 "
 
 		holeName = ""
@@ -2704,17 +2700,19 @@ class DataCanvas(wxBufferedWindow):
 					coreIndex, x, y, startx, flag = r
 					coreInfo = self.findCoreInfoByIndex(coreIndex)
 					if coreInfo is not None:
-						holeType, holeName = self.DrawGraphInfo(dc, coreInfo, flag)
+						if self.showCoreInfo:
+							self.DrawGraphInfo(dc, coreInfo, flag)
+						holeType, holeName = coreInfo.type, coreInfo.hole
+						self.minData = coreInfo.minData
 						self.selectedHoleType = holeType
 						self.DrawMouseInfo(dc, coreInfo, x, y, startx, flag, holeType)
-						self.DrawHighlight(dc)
-			if holeType != "" :
+			if holeType != "":
 				break
 		self.parent.statusBar.SetStatusText(self.statusStr)
 
 		self.selectedHoleType = holeType
 
-		if self.MousePos is not None :
+		if self.MousePos is not None:
 			dc.SetBrush(wx.TRANSPARENT_BRUSH)
 			dc.SetPen(wx.Pen(self.colorDict['foreground'], 1))
 			dc.SetTextBackground(self.colorDict['background'])
@@ -2724,28 +2722,30 @@ class DataCanvas(wxBufferedWindow):
 			ycoord = self.getDepth(ycoord) if self.MousePos[0] < self.splicerX else self.getSpliceDepth(ycoord)
 			ycoord = ycoord * self.GetRulerUnitsFactor()
 			ycoord = round(ycoord, 3)
-			if self.MousePos[0] < self.splicerX :
+			if self.MousePos[0] < self.splicerX:
 				if holeName != "" and self.selectedTie < 0: # tie displays its depth, don't show mouse depth on drag
 					dc.DrawText(str(ycoord), self.GetHoleStartX(holeName, holeType), self.MousePos[1] - 5)
-				else :
+				else:
 					dc.DrawText(str(ycoord), self.compositeX + 3, self.MousePos[1] - 5)
-				if self.showGrid == True :
+				if self.showGrid == True:
 					dc.SetPen(wx.Pen(self.colorDict['foreground'], 1, style=wx.DOT))
 					dc.DrawLines(((self.compositeX, self.MousePos[1] - 5), (self.splicerX - 50, self.MousePos[1] - 5)))
 			elif self.MousePos[0] <= self.Width: # 1/29/2014 brg: Don't draw depth info if we're over options tab
 				dc.DrawText(str(ycoord), self.splicerX + 3, self.MousePos[1] - 5)
-				if self.showGrid == True :
+				if self.showGrid == True:
 					dc.SetPen(wx.Pen(self.colorDict['foreground'], 1, style=wx.DOT))
 					dc.DrawLines(((self.splicerX, self.MousePos[1] - 5), (self.Width, self.MousePos[1] - 5)))
 
 			#self.MousePos = None
 
 		dc.EndDrawing()
+		# endDrawTime = time.clock()
+		# print("Draw time = {}s".format(endDrawTime - beginDrawTime))
 			
 		
 	def DrawAgeDepthView(self, dc):
 		# Draw LINE
-		#for data in self.AgeDataList :
+		#for data in self.AgeDataList:
 		#	idx, start, rawstart, age, name, type, sedrate = data
 		#	self.AgeSpliceGap = start * self.AgeUnit / age
 		#	break
@@ -2753,9 +2753,9 @@ class DataCanvas(wxBufferedWindow):
 		dc.SetPen(wx.Pen(wx.RED, 1))
 		preX = self.compositeX + ((self.firstPntAge - self.minAgeRange) * self.ageLength) + self.AgeShiftX
 		preY = self.startAgeDepth + (self.firstPntDepth - self.rulerStartAgeDepth) * (self.ageYLength / self.ageGap) + self.AgeShiftY
-		for data in self.AgeDataList :
+		for data in self.AgeDataList:
 			idx, start, rawstart, age, name, label, type, sed = data 
-			if self.mbsfDepthPlot == 1 : # if mbsf
+			if self.mbsfDepthPlot == 1: # if mbsf
 				start = rawstart
 			x = self.compositeX + ((age - self.minAgeRange) * self.ageLength) + self.AgeShiftX
 			y = self.startAgeDepth + (start - self.rulerStartAgeDepth) * (self.ageYLength / self.ageGap) + self.AgeShiftY
@@ -2767,29 +2767,29 @@ class DataCanvas(wxBufferedWindow):
 		dc.SetFont(self.ageFont)
 		self.DrawData["CoreArea"] = []
 		index = 0
-		for data in self.StratData :
+		for data in self.StratData:
 			for r in data:
 				order, hole, name, label, start, stop, rawstart, rawstop, age, type = r
 				mcdstart = start
-				if self.mbsfDepthPlot == 1 : # if mbsf 
+				if self.mbsfDepthPlot == 1: # if mbsf 
 					start = rawstart
 					stop = rawstop
-				if type == 0 :  #DIATOMS 
+				if type == 0:  #DIATOMS 
 					dc.SetPen(wx.Pen(self.colorDict['diatom'], 1))
 					dc.SetBrush(wx.Brush(self.colorDict['diatom']))
-				elif type == 1 : #RADIOLARIA
+				elif type == 1: #RADIOLARIA
 					dc.SetPen(wx.Pen(self.colorDict['rad'], 1))
 					dc.SetBrush(wx.Brush(self.colorDict['rad']))
 					#dc.SetTextForeground(self.colorDict['rad'])
-				elif type == 2 : #FORAMINIFERA
+				elif type == 2: #FORAMINIFERA
 					dc.SetPen(wx.Pen(self.colorDict['foram'], 1))
 					dc.SetBrush(wx.Brush(self.colorDict['foram']))
 					#dc.SetTextForeground(self.colorDict['foram'])
-				elif type == 3 : #NANNOFOSSILS
+				elif type == 3: #NANNOFOSSILS
 					dc.SetPen(wx.Pen(self.colorDict['nano'], 1))
 					dc.SetBrush(wx.Brush(self.colorDict['nano']))
 					#dc.SetTextForeground(self.colorDict['nano'])
-				elif type == 4 : #PALEOMAG
+				elif type == 4: #PALEOMAG
 					dc.SetPen(wx.Pen(self.colorDict['paleomag'], 1))
 					dc.SetBrush(wx.Brush(self.colorDict['paleomag']))
 					#dc.SetTextForeground(self.colorDict['paleomag'])
@@ -2798,10 +2798,10 @@ class DataCanvas(wxBufferedWindow):
 				y = self.startAgeDepth + (start - self.rulerStartAgeDepth) * (self.ageYLength / self.ageGap) + self.AgeShiftY
 				#y2 = self.startAgeDepth + (stop- self.rulerStartAgeDepth) * ( self.ageYLength / self.ageGap )
 
-				if self.SelectedAge == index : 
+				if self.SelectedAge == index: 
 					dc.SetPen(wx.Pen(wx.WHITE, 1))
 					dc.SetBrush(wx.Brush(wx.WHITE))
-					if self.AgeEnableDrag == 0 :
+					if self.AgeEnableDrag == 0:
 						dc.DrawLines(((x, self.startAgeDepth), (x, y)))
 						dc.DrawLines(((self.compositeX, y), (x, y)))
 						dc.SetTextForeground(self.colorDict['foreground'])
@@ -2810,7 +2810,7 @@ class DataCanvas(wxBufferedWindow):
 						dc.DrawText(str(age), x + 15, y - 15)
 						dc.SetTextForeground(wx.BLACK)
 
-				if x >= self.compositeX and x <= self.splicerX :
+				if x >= self.compositeX and x <= self.splicerX:
 					dc.DrawCircle(x, y, 12)
 					dc.DrawText(label, x - 5, y - 5)
 				l = []
@@ -2821,18 +2821,18 @@ class DataCanvas(wxBufferedWindow):
 
 		dc.SetBrush(wx.Brush(wx.Colour(255, 215, 0)))
 		dc.SetPen(wx.Pen(wx.Colour(255, 215, 0), 1))
-		for data in self.UserdefStratData :
+		for data in self.UserdefStratData:
 			for r in data:
 				name, start, rawstart, age, comment = r
-				if self.mbsfDepthPlot == 1 : # if mbsf 
+				if self.mbsfDepthPlot == 1: # if mbsf 
 					start = rawstart
 				x = self.compositeX + ((age - self.minAgeRange) * self.ageLength) + self.AgeShiftX
 				y = self.startAgeDepth + (start - self.rulerStartAgeDepth) * (self.ageYLength / self.ageGap) + self.AgeShiftY
 
-				if self.SelectedAge == index : 
+				if self.SelectedAge == index: 
 					dc.SetPen(wx.Pen(wx.WHITE, 1))
 					dc.SetBrush(wx.Brush(wx.WHITE))
-					if self.AgeEnableDrag == 0 :
+					if self.AgeEnableDrag == 0:
 						dc.DrawLines(((x, self.startAgeDepth), (x, y)))
 						dc.DrawLines(((self.compositeX, y), (x, y)))
 						dc.SetTextForeground(self.colorDict['foreground'])
@@ -2840,13 +2840,13 @@ class DataCanvas(wxBufferedWindow):
 						dc.DrawText(str(start), self.compositeX + 3, y - 15)
 						dc.DrawText(str(age), x + 15, y - 15)
 						dc.SetTextForeground(wx.BLACK)
-				else :
+				else:
 					dc.SetBrush(wx.Brush(wx.Colour(255, 215, 0)))
 					dc.SetPen(wx.Pen(wx.Colour(255, 215, 0), 1))
 
-				if x >= self.compositeX and x <= self.splicerX :
+				if x >= self.compositeX and x <= self.splicerX:
 					dc.DrawCircle(x, y, 12)
-					if len(name) > 2 :
+					if len(name) > 2:
 						name = name[0] + name[1]
 					dc.DrawText(name, x - 5, y - 5)
 
@@ -2869,63 +2869,63 @@ class DataCanvas(wxBufferedWindow):
 		dc.SetPen(wx.Pen(wx.Colour(255, 215, 0), 1))
 		x = self.compositeX + ((self.firstPntAge - self.minAgeRange) * self.ageLength) + self.AgeShiftX
 		y = self.startAgeDepth + (self.firstPntDepth - self.rulerStartAgeDepth) * (self.ageYLength / self.ageGap) + self.AgeShiftY
-		if x >= self.compositeX and x <= self.splicerX :
-			if y > (self.startAgeDepth - 10) :
+		if x >= self.compositeX and x <= self.splicerX:
+			if y > (self.startAgeDepth - 10):
 				dc.DrawCircle(x, y, 5)
 
 		dc.SetTextForeground(self.colorDict['foreground'])
-		if self.spliceWindowOn == 1 :
+		if self.spliceWindowOn == 1:
 			self.DrawAgeYRate(dc)
 			smooth_flag = 0 
 
 			splice_smooth = -1
-			for r in self.range :
+			for r in self.range:
 				if r[0] == 'splice':
 					splice_smooth = r[4]
 					break
 
 			#self.AgeSpliceHole = False
-			if self.AgeSpliceHole == True :
-				if splice_smooth != 1 :
+			if self.AgeSpliceHole == True:
+				if splice_smooth != 1:
 					for data in self.SpliceData:
 						for r in data:
 							hole = r 
 							self.DrawSplice(dc, hole, smooth_flag)
-				if splice_smooth != 0 :
+				if splice_smooth != 0:
 					smooth_flag = 1 
-					if len(self.SpliceData) > 0 : 
+					if len(self.SpliceData) > 0: 
 						smooth_flag = 2 
 					for data in self.SpliceSmoothData:
 						for r in data:
 							hole = r 
 							self.DrawSplice(dc, hole, smooth_flag)
-			else :
-				if len(self.LogSpliceData) == 0 :
-					if splice_smooth != 1 :
+			else:
+				if len(self.LogSpliceData) == 0:
+					if splice_smooth != 1:
 						for data in self.SpliceData:
 							for r in data:
 								hole = r 
 								self.DrawSplice(dc, hole, smooth_flag)
 
-					if splice_smooth != 0 :
+					if splice_smooth != 0:
 						smooth_flag = 1 
-						if len(self.SpliceData) > 0 : 
+						if len(self.SpliceData) > 0: 
 							smooth_flag = 2 
 						for data in self.SpliceSmoothData:
 							for r in data:
 								hole = r 
 								self.DrawSplice(dc, hole, smooth_flag)
-				else :
-					if splice_smooth != 1 :
-						for data in self.LogSpliceData :
+				else:
+					if splice_smooth != 1:
+						for data in self.LogSpliceData:
 							for r in data:
 								hole = r 
 								self.DrawSplice(dc, hole, smooth_flag)
-					if splice_smooth != 0 :
+					if splice_smooth != 0:
 						smooth_flag = 1 
-						if len(self.SpliceData) > 0 : 
+						if len(self.SpliceData) > 0: 
 							smooth_flag = 2 
-						for data in self.LogSpliceSmoothData :
+						for data in self.LogSpliceSmoothData:
 							for r in data:
 								hole = r 
 								self.DrawSplice(dc, hole, smooth_flag)
@@ -2944,10 +2944,10 @@ class DataCanvas(wxBufferedWindow):
 
 	def BUILD_AGEMODEL(self, order, age_name, age_depth, age_age):
 		idx = 0
-		for data in self.StratData :
+		for data in self.StratData:
 			for r in data:
 				#order, hole, name, label, start, stop, rawstart, rawstop, age, type = r
-				if r[3] == age_name and r[6] == age_depth and r[8] == age_age :
+				if r[3] == age_name and r[6] == age_depth and r[8] == age_age:
 					self.AgeDataList.insert(order, (idx, r[4], r[6], r[8], r[2], r[3], r[9], 0.0)) 
 					return True 
 			idx = idx + 1
@@ -2955,24 +2955,24 @@ class DataCanvas(wxBufferedWindow):
 		return False 
 
 	def CHECK_AGE(self, age_name, age_depth, age_age):
-		for data in self.StratData :
+		for data in self.StratData:
 			for r in data:
 				#order, hole, name, label, start, stop, rawstart, rawstop, age, type = r
-				if r[3] == age_name and r[6] == age_depth and r[8] == age_age :
+				if r[3] == age_name and r[6] == age_depth and r[8] == age_age:
 					return True 
 		return False 
 
 
 	def GetAGENAME(self, age_depth, age_age):
-		for data in self.StratData :
+		for data in self.StratData:
 			for r in data:
 				#order, hole, name, label, start, stop, rawstart, rawstop, age, type = r
-				if r[6] == age_depth and r[8] == age_age :
+				if r[6] == age_depth and r[8] == age_age:
 					return r[3], r[9] 
-		for data in self.UserdefStratData :
+		for data in self.UserdefStratData:
 			for r in data:
 				#name, mcd, depth, age, comment = r
-				if r[2] == age_depth and r[3] == age_age :
+				if r[2] == age_depth and r[3] == age_age:
 					return r[0], "handpick" 
 		return None 
 
@@ -3014,7 +3014,7 @@ class DataCanvas(wxBufferedWindow):
 		prevdepth = self.firstPntDepth
 		prevage = self.firstPntAge
 
-		for agedata in self.AgeDataList :
+		for agedata in self.AgeDataList:
 			n, mcd, mbsf, age, name, label, type, sed = agedata
 			depth = mcd
 
@@ -3029,9 +3029,9 @@ class DataCanvas(wxBufferedWindow):
 			dc.DrawText(label + "(" + str(age) + ")", sx + width + 10, sy - 5)
 
 			# draw sedrate
-			if (prevage - age) != 0 :
+			if (prevage - age) != 0:
 				sedrate = (prevdepth - depth) / (prevage - age)
-			else : 
+			else: 
 				# ??? not sure
 				sedrate = (prevdepth - depth) 
 
@@ -3042,11 +3042,11 @@ class DataCanvas(wxBufferedWindow):
 			dc.SetPen(wx.Pen(wx.Colour(0, 139, 0), 1))
 			sedx = sx + width + sedrate_width + sedrate * sedrate_size
 
-			tempsedx = int(100.0 * float(sedrate)) / 100.0;
+			tempsedx = int(100.0 * float(sedrate)) / 100.0
 			dc.DrawText(str(tempsedx), sedx + 5, prevy + 5)
 
 			dc.DrawLines(((sedx, prevy), (sedx, sy)))
-			if count > 0 :
+			if count > 0:
 				sedxx = sx + width + sedrate_width + prevsedrate * sedrate_size
 				dc.DrawLines(((sedxx, prevy), (sedx, prevy)))
 
@@ -3062,24 +3062,33 @@ class DataCanvas(wxBufferedWindow):
 	# determine leftmost X for each hole's plot column
 	def InitHoleWidths(self):
 		self.WidthsControl = []
-		baseX = self.compositeX - self.minScrollRange + 50
+		baseX = self.compositeX - self.minScrollRange + self.plotLeftMargin
 		
 		# even if we aren't drawing HoleData (unsmoothed), there will always be HoleData
 		# corresponding to SmoothData, so it's safe to rely on self.HoleData here.  		
 		for holeIndex, holeList in enumerate(self.HoleData):
 			hole = holeList[0] # hole data is nested in an extra list
 			holeKey = hole[0][7] + hole[0][2] # hole name + hole datatype
-			holeX = baseX + holeIndex * (self.holeWidth + 50)
+			holeX = baseX + holeIndex * (self.holeWidth + self.plotLeftMargin)
 			# store as a tuple - DrawStratCore() logic still uses index to access value
 			self.WidthsControl.append((holeX, holeKey))
+
+	# Disable controls in CompositePanel and FilterPanel that require loaded data to
+	# function and aren't otherwise en/disabled by their respective panel's logic (e.g.
+	# if data is loaded, the Create/Edit buttons in FilterPanel will always be enabled).
+	def DisableDisplayControls(self):
+		self.parent.compositePanel.EnableSETButton(False)
+		self.parent.filterPanel.DisableAllControls()
 
 	def DrawMainView(self, dc):
 		self.DrawData["CoreArea"] = [] 
 		self.DrawData["SpliceArea"] = [] 
 		self.DrawData["LogArea"] = [] 
-		self.DrawData["CoreInfo"] = [] 
+		self.DrawData["CoreInfo"] = []
+		self.AffineTieArrows = [] # (hole+core, bounding rect) for each TIE arrow
+		self.highlightedCore = False # has a core been highlighted (rect drawn around bounds)?
 
-		if self.ScrollUpdate == 1 : 
+		if self.ScrollUpdate == 1: 
 			self.UpdateScroll(1)
 			self.ScrollUpdate = 0 
 
@@ -3088,7 +3097,6 @@ class DataCanvas(wxBufferedWindow):
 		self.HoleCount = 0
 		self.coreCount = 0 
 		self.newHoleX = 30.0
-		icount = 0
 		holeType = ""
 
 		self.InitHoleWidths()
@@ -3098,32 +3106,34 @@ class DataCanvas(wxBufferedWindow):
 				hole = r 
 				holeType = self.DrawHoleGraph(dc, hole, 0, holeType) 
 				self.HoleCount = self.HoleCount + 1 
-			icount = icount + 1
 
 		self.HoleCount = 0
 		self.coreCount = 0 
 		self.newHoleX = 30.0
 		smooth_flag = 3 
-		icount = 0
 		holeType = ""
-		if len(self.HoleData) == 0 : 
+		if len(self.HoleData) == 0: 
 			smooth_flag = 1 
 		for data in self.SmoothData:
 			for r in data:
 				hole = r 
 				holeType = self.DrawHoleGraph(dc, hole, smooth_flag, holeType) 
 				self.HoleCount = self.HoleCount + 1 
-			icount = icount + 1
 			
 		self.HoleCount = -2 
 		# Drawing Black Box for Erasing the Parts
 		dc.SetBrush(wx.Brush(self.colorDict['background']))
 		dc.SetPen(wx.Pen(self.colorDict['background'], 1))
-		dc.DrawRectangle(0, 0, self.compositeX, self.Height)
+		dc.DrawRectangle(0, 0, self.compositeX, self.Height) # is this necessary?
 
 		self.DrawRuler(dc)
 
-		if self.spliceWindowOn == 1 :
+ 		# If no data is loaded, show help text.
+		if len(self.HoleData) == 0 and len(self.SmoothData) == 0:
+			msg = "No Data has been loaded. In Data Manager, right-click on a Site, data type, or data file and choose Load."
+			dc.DrawText(msg, self.compositeX + 10, self.getCoord(self.rulerStartDepth))
+
+		if self.spliceWindowOn == 1:
 			for data in self.AltSpliceData:
 				for r in data:
 					hole = r 
@@ -3131,34 +3141,34 @@ class DataCanvas(wxBufferedWindow):
 
 			self.splice_smooth_flag = 0 
 			splice_data = []
-			for r in self.range :
+			for r in self.range:
 				if r[0] == 'splice':
 					self.splice_smooth_flag = r[4] 
 
 			splice_data = []
-			if self.splice_smooth_flag == 1 :
+			if self.splice_smooth_flag == 1:
 				splice_data = self.SpliceSmoothData
-			else :
+			else:
 				splice_data = self.SpliceData
 			smooth_flag = 0 
-			if self.ShowSplice == True :
+			if self.ShowSplice == True:
 				self.DrawSplice(dc, None, None)
 # 				for data in splice_data:
 # 					for r in data:
 # 						hole = r 
 # 						self.DrawSplice(dc, hole, smooth_flag)
 
-				if self.ShowLog == True and self.LogData != [] and self.LogSpliceData == [] :
+				if self.ShowLog == True and self.LogData != [] and self.LogSpliceData == []:
 					for data in splice_data:
 						for r in data:
 							hole = r 
 							self.DrawSplice(dc, hole, 3)
 							self.DrawSplice(dc, hole, 4)
-				elif self.ShowLog == True :
+				elif self.ShowLog == True:
 					log_splice_data = []
-					if self.splice_smooth_flag == 1 :
+					if self.splice_smooth_flag == 1:
 						log_splice_data = self.LogSpliceSmoothData
-					else :
+					else:
 						log_splice_data = self.LogSpliceData
 
 					for data in log_splice_data:
@@ -3168,77 +3178,77 @@ class DataCanvas(wxBufferedWindow):
 							self.DrawSplice(dc, hole, 4)
 
 				splice_data = []
-				if self.splice_smooth_flag == 2 :
+				if self.splice_smooth_flag == 2:
 					splice_data = self.SpliceSmoothData
 
 				smooth_flag = 1 
-				if len(self.SpliceData) > 0 : 
+				if len(self.SpliceData) > 0: 
 					smooth_flag = 2 
 				for data in splice_data:
 					for r in data:
 						hole = r 
 						self.DrawSplice(dc, hole, smooth_flag)
 
-				if self.ShowLog == True and self.LogData != [] :
+				if self.ShowLog == True and self.LogData != []:
 					log_splice_data = []
-					if self.splice_smooth_flag == 2 :
+					if self.splice_smooth_flag == 2:
 						log_splice_data = self.LogSpliceSmoothData
 
-					if self.LogSpliceSmoothData == [] :
+					if self.LogSpliceSmoothData == []:
 						for data in splice_data:
 							for r in data:
 								hole = r 
 								self.DrawSplice(dc, hole, 5)
 								self.DrawSplice(dc, hole, 6)
-					else : 
+					else: 
 						for data in log_splice_data:
 							for r in data:
 								hole = r 
 								self.DrawSplice(dc, hole, 5)
 								self.DrawSplice(dc, hole, 6)
 
-			if self.ShowLog == True :
+			if self.ShowLog == True:
 				log_smooth_flag = 0 
 				log_data = []
-				for r in self.range :
+				for r in self.range:
 					if r[0] == 'log':
 						log_smooth_flag = r[4] 
 
 				log_data = []
-				if log_smooth_flag == 1 :
+				if log_smooth_flag == 1:
 					log_data = self.LogSMData
-				else :
+				else:
 					log_data = self.LogData
 
-				if self.isLogShifted == False :
+				if self.isLogShifted == False:
 
 					for data in log_data:
 						for r in data:
 							hole = r 
 							self.DrawHoleGraph(dc, hole, 5, None)
 					log_data = []
-					if log_smooth_flag == 2 :
+					if log_smooth_flag == 2:
 						log_data = self.LogSMData
 					for data in log_data:
 						for r in data:
 							hole = r 
 							self.DrawHoleGraph(dc, hole, 7, None)
-				else :
+				else:
 					for data in log_data:
 						for r in data:
 							hole = r 
 							self.DrawHoleGraph(dc, hole, 6, None)
 					log_data = []
-					if log_smooth_flag == 2 :
+					if log_smooth_flag == 2:
 						log_data = self.LogSMData
 					for data in log_data:
 						for r in data:
 							hole = r 
 							self.DrawHoleGraph(dc, hole, 7, None)
 
-		if self.ShowStrat == True :
+		if self.ShowStrat == True:
 			self.DrawStratCore(dc, False)
-			if len(self.SpliceData) > 0 :
+			if len(self.SpliceData) > 0:
 				self.DrawStratCore(dc, True)
 
 		if self.grabCore != -1:
@@ -3253,7 +3263,7 @@ class DataCanvas(wxBufferedWindow):
 
 		### draw ties
 		tempx = 0
-		if self.hideTie == 0 : 
+		if self.hideTie == 0: 
 			x = 0
 			x0 = 0
 			y = 0
@@ -3261,7 +3271,7 @@ class DataCanvas(wxBufferedWindow):
 			radius = self.tieDotSize / 2
 
 			fixedTieDepth = 0
-			for compTie in self.TieData: # draw composite ties
+			for compTie in self.TieData: # draw in-progress composite ties (not established TIE arrows)
 				if compTie.fixed == 1:
 					dc.SetBrush(wx.Brush(self.colorDict['fixedTie']))
 					dc.SetPen(wx.Pen(self.colorDict['fixedTie'], 1))
@@ -3273,8 +3283,8 @@ class DataCanvas(wxBufferedWindow):
 				tempx = round(compTie.depth, 3)
 
 				x = (compTie.hole * self.holeWidth) + (compTie.hole * 50) + 50 - self.minScrollRange + 40 
-				if compTie.depth >= self.rulerStartDepth and compTie.depth <= self.rulerEndDepth :
-					if x < (self.splicerX - self.holeWidth / 2) :
+				if compTie.depth >= self.rulerStartDepth and compTie.depth <= self.rulerEndDepth:
+					if x < (self.splicerX - self.holeWidth / 2):
 						dc.DrawCircle(x, y, radius)
 						if compTie.fixed == 1: 
 							dc.SetPen(wx.Pen(self.colorDict['fixedTie'], self.tieline_width, style=wx.DOT))
@@ -3295,7 +3305,7 @@ class DataCanvas(wxBufferedWindow):
 				x0 = x
 				y0 = y 
 
-			if self.spliceWindowOn == 1 : # draw splice ties
+			if self.spliceWindowOn == 1: # draw splice ties
 				count = 0
 				diff = 0
 				dc.SetTextBackground(self.colorDict['background'])
@@ -3305,19 +3315,19 @@ class DataCanvas(wxBufferedWindow):
 					if count == 0: 
 						dc.SetBrush(wx.Brush(self.colorDict['fixedTie']))
 						dc.SetPen(wx.Pen(self.colorDict['fixedTie'], 1))
-					elif count == 1 : 
+					elif count == 1: 
 						dc.SetBrush(wx.Brush(self.colorDict['shiftTie']))
 						dc.SetPen(wx.Pen(self.colorDict['shiftTie'], 1))
 						x += self.holeWidth + 50
 
 					y = self.startDepth + (spliceTie.depth - self.SPrulerStartDepth) * (self.length / self.gap)
 
-					if spliceTie.depth >= self.SPrulerStartDepth and spliceTie.depth <= self.SPrulerEndDepth :
+					if spliceTie.depth >= self.SPrulerStartDepth and spliceTie.depth <= self.SPrulerEndDepth:
 						dc.DrawCircle(x + diff, y, radius)
-						if count == 0 : 
+						if count == 0: 
 							dc.SetPen(wx.Pen(self.colorDict['fixedTie'], self.tieline_width, style=wx.DOT))
 							dc.DrawLine(x, y, x + self.holeWidth + 50, y)
-						elif count == 1 : 
+						elif count == 1: 
 							dc.DrawRectangle(x + self.holeWidth - radius, y - radius, self.tieDotSize, self.tieDotSize)
 							if spliceTie.constrained == 0:
 								dc.SetPen(wx.Pen(self.colorDict['shiftTie'], self.tieline_width + 1))
@@ -3333,10 +3343,10 @@ class DataCanvas(wxBufferedWindow):
 					x0 = x
 					y0 = y 
 					count = count + 1
-					if count >= 2 :
+					if count >= 2:
 						count = 0
 
-				if self.SpliceData == [] and self.SpliceSmoothData == [] :
+				if self.SpliceData == [] and self.SpliceSmoothData == []:
 					return
 
 				count = 0
@@ -3347,28 +3357,28 @@ class DataCanvas(wxBufferedWindow):
 					dc.SetTextForeground(self.colorDict['foreground'])
 					dc.SetBrush(wx.Brush(self.colorDict['shiftTie']))
 					dc.SetPen(wx.Pen(self.colorDict['shiftTie'], 1))
-					for r in data :
+					for r in data:
 						y = self.startDepth + (r[6] - self.SPrulerStartDepth) * (self.length / self.gap)
 						x = self.splicerX + self.holeWidth + 100 
-						if count == 0 : 
+						if count == 0: 
 							dc.SetBrush(wx.Brush(self.colorDict['fixedTie']))
 							dc.SetPen(wx.Pen(self.colorDict['fixedTie'], 1))
-						elif count == 1 : 
+						elif count == 1: 
 							x += self.holeWidth + 50
 							dc.SetBrush(wx.Brush(self.colorDict['shiftTie']))
 							dc.SetPen(wx.Pen(self.colorDict['shiftTie'], 1))
 						dc.DrawCircle(x, y, radius)
-						if count == 0 : 
-							if self.Highlight_Tie == tie_index :
+						if count == 0: 
+							if self.Highlight_Tie == tie_index:
 								dc.SetPen(wx.Pen(self.colorDict['fixedTie'], self.tieline_width))
-							else :
+							else:
 								dc.SetPen(wx.Pen(self.colorDict['fixedTie'], self.tieline_width, style=wx.DOT))
 							dc.DrawLine(x, y, x + self.holeWidth + 50, y)
-						elif count == 1 : 
+						elif count == 1: 
 							dc.DrawRectangle(x + self.holeWidth - radius, y - radius, self.tieDotSize, self.tieDotSize)
-							if self.Highlight_Tie == tie_index :
+							if self.Highlight_Tie == tie_index:
 								dc.SetPen(wx.Pen(self.colorDict['shiftTie'], self.tieline_width))
-							else :
+							else:
 								dc.SetPen(wx.Pen(self.colorDict['shiftTie'], self.tieline_width, style=wx.DOT))
 							dc.DrawLine(x, y, x + self.holeWidth, y)
 
@@ -3376,10 +3386,10 @@ class DataCanvas(wxBufferedWindow):
 						tempx = r[6]
 						tempx = round(tempx, 3)
 
-						if count == 1 :
+						if count == 1:
 							x0 = r[0] - self.holeWidth
 							
-						if count == 1 : 
+						if count == 1: 
 							tie_index += 1 
 							count = -1 
 						x0 = x
@@ -3389,7 +3399,7 @@ class DataCanvas(wxBufferedWindow):
 
 	def SetSaganFromFile(self, tie_list):
 		self.LogTieData = []
-		for tie_data in tie_list : 
+		for tie_data in tie_list: 
 			id, holeB, coreB, holeA, coreA, depth, depthB = tie_data 
 			coreInfo = self.findCoreInfoByHoleCore(holeA, str(coreA))
 
@@ -3405,12 +3415,12 @@ class DataCanvas(wxBufferedWindow):
 			l.append((x, y, coreInfo.core, 0, -1, -1, depth, self.splicerX, id, depth))
 			self.LogTieData.append(l)
 
-			rey1 = int(100.0 * float(depth)) / 100.0;
-			rey2 = int(100.0 * float(depthB)) / 100.0;
+			rey1 = int(100.0 * float(depth)) / 100.0
+			rey2 = int(100.0 * float(depthB)) / 100.0
 			info = holeA + " " + str(coreA) + " " + str(rey2) + "\t [TieTo] Log " + str(rey1)
 			self.parent.AddTieInfo(info, rey2)
 
-		if len(self.LogTieData) > 0 : 
+		if len(self.LogTieData) > 0: 
 			self.PreviewFirstNo = 1
 			self.PreviewNumTies = 1
 
@@ -3418,7 +3428,7 @@ class DataCanvas(wxBufferedWindow):
 	def SetSpliceFromFile(self, tie_list, flag):
 		# clean splice core
 		self.SpliceCore = []
-		if flag == False :
+		if flag == False:
 			self.SpliceTieData = []
 			self.RealSpliceTie = []
 
@@ -3430,14 +3440,14 @@ class DataCanvas(wxBufferedWindow):
 		prevId = -1 
 		strtypeA = ""
 		strtypeB = ""
-		for tie_data in tie_list : 
+		for tie_data in tie_list: 
 			id, typeB, holeB, coreB, typeA, holeA, coreA, depthA, depthB = tie_data 
-			if typeA == 'GRA' :
+			if typeA == 'GRA':
 				typeA = 'Bulk Density(GRA)'
-			if typeB == 'GRA' :
+			if typeB == 'GRA':
 				typeB = 'Bulk Density(GRA)'
 
-			if flag == False : # create dummy splice ties
+			if flag == False: # create dummy splice ties
 				self.RealSpliceTie.append(DefaultSpliceTie())
 				self.RealSpliceTie.append(DefaultSpliceTie())
 
@@ -3449,11 +3459,11 @@ class DataCanvas(wxBufferedWindow):
 			coreInfoA = self.findCoreInfoByHoleCoreType(holeA, str(coreA), typeA)
 			coreInfoB = self.findCoreInfoByHoleCoreType(holeB, str(coreB), typeB)
 
-			if prevCoreIndex != coreInfoA.core :
+			if prevCoreIndex != coreInfoA.core:
 				self.SpliceCore.append(coreInfoA.core)
 			prevCoreIndex = coreInfoA.core
 
-		if id != -1 :
+		if id != -1:
 			self.SpliceCore.append(coreInfoB.core)
 
 		prevCoreIndex = coreInfoA.core
@@ -3462,7 +3472,7 @@ class DataCanvas(wxBufferedWindow):
 		self.SpliceTieFromFile = len(self.RealSpliceTie)
 
 
-	def OnSetQTCb(self, event) :
+	def OnSetQTCb(self, event):
 		opId = event.GetId() 
 		if opId == 3: # show this core on Corelyzer
 			for mouse in self.DrawData["MouseInfo"]:
@@ -3475,25 +3485,25 @@ class DataCanvas(wxBufferedWindow):
 				if coreInfo != None:
 					return
 
-	def OnScaleSelectionCb(self, event) :
+	def OnScaleSelectionCb(self, event):
 		opId = event.GetId() 
-		if opId == 1 : # scale up
-			if self.bothscale == 0 :
+		if opId == 1: # scale up
+			if self.bothscale == 0:
 				self.bothscale = 1 
-			else :
+			else:
 				self.bothscale = 0 
-		elif opId == 2 : # data scale down
-			if self.datascale == 0 :
+		elif opId == 2: # data scale down
+			if self.datascale == 0:
 				self.datascale = 1 
-			else :
+			else:
 				self.datascale = 0 
 		self.UpdateDrawing()
 
-	def OnLogTieSelectionCb(self, event) :
+	def OnLogTieSelectionCb(self, event):
 		opId = event.GetId() 
 		self.activeSATie = -1
 		self.showMenu = False
-		if opId == 1 :
+		if opId == 1:
 			self.DeleteLogTie()
 			self.PreviewLog[0] = -1
 			self.PreviewLog[1] = -1
@@ -3503,37 +3513,37 @@ class DataCanvas(wxBufferedWindow):
 			self.PreviewLog[5] = -1
 			self.PreviewLog[6] = 1.0 
 			self.saganDepth = -1
-		elif opId == 2 :
+		elif opId == 2:
 			self.MatchLog()
 
 		self.LogselectedTie = -1
 		self.drag = 0 
 		self.UpdateDrawing()
 
-	def DeleteLogTie(self) :
-		if self.LogselectedTie >= 0 :
+	def DeleteLogTie(self):
+		if self.LogselectedTie >= 0:
 			tieNo = -1
 			data = self.LogTieData[self.LogselectedTie]
 			fixed = 0
-			for r in data :
+			for r in data:
 				fixed = r[3]
 				tieNo = r[8]
 
-			if tieNo > 0 :
+			if tieNo > 0:
 				ret = py_correlator.delete_sagan(tieNo)
-				if ret == 0 :
+				if ret == 0:
 					self.LogselectedTie = -1
 					return
 
-				if fixed == 0 : # move tie
+				if fixed == 0: # move tie
 					#self.LogTieData.remove(data)
 					#data = self.LogTieData[self.LogselectedTie-1]
 					#self.LogTieData.remove(data)
 					self.LogTieData.pop(self.LogselectedTie)
 					self.LogTieData.pop(self.LogselectedTie - 1)
-				else :		 # fixed tie 
+				else:		 # fixed tie 
 					length = len(self.LogTieData)
-					if (self.SPselectedTie + 1) < length :
+					if (self.SPselectedTie + 1) < length:
 						#data = self.LogTieData[self.LogselectedTie+1]
 						#self.LogTieData.remove(data)
 						self.LogTieData.pop(self.LogselectedTie + 1)
@@ -3543,39 +3553,39 @@ class DataCanvas(wxBufferedWindow):
 				#self.HoleData = []
 				#self.parent.OnGetData(self.parent.smoothDisplay, True)
 
-				if self.hole_sagan == -1 :
+				if self.hole_sagan == -1:
 					self.parent.UpdateELD(True)
-				else : 
+				else: 
 					self.OnUpdateHoleELD()
 				self.parent.EldChange = True
 
 
 				s = "Log/Core Match undo: " + str(datetime.today()) + "\n\n"
 				self.parent.logFileptr.write(s)
-				if self.parent.showReportPanel == 1 :
+				if self.parent.showReportPanel == 1:
 					self.parent.OnUpdateReport()
 
 				i = -1 
-				if fixed == 1 :
+				if fixed == 1:
 					i = (self.LogselectedTie + 1) / 2
-				else :
+				else:
 					i = self.LogselectedTie / 2
 				self.parent.eldPanel.DeleteTie(i)
 
-			else :
+			else:
 				self.OnClearTies(2)
 
 			self.LogselectedTie = -1
-			if self.parent.eldPanel.fileList.GetCount() == 0 :
+			if self.parent.eldPanel.fileList.GetCount() == 0:
 				self.LogAutoMode = 1
 				self.parent.autoPanel.OnButtonEnable(0, True)
 
-	def MatchLog(self) :
-		if self.lastLogTie != -1 :
+	def MatchLog(self):
+		if self.lastLogTie != -1:
 			self.LogselectedTie = self.lastLogTie
 			self.lastLogTie = -1
 
-		if self.LogselectedTie >= 0 :
+		if self.LogselectedTie >= 0:
 			tieNo = -1 
 			data = self.LogTieData[self.LogselectedTie]
 			coreidA = 0
@@ -3586,14 +3596,14 @@ class DataCanvas(wxBufferedWindow):
 			y2 = 0
 			x1 = 0
 			x2 = 0
-			for r in data :
+			for r in data:
 				coreidB = r[2]
 				#y1 = (r[1] - self.startDepth) / ( self.length / self.gap ) + self.SPrulerStartDepth
 				y1 = r[6]
 				x1 = r[4]
 
 			data = self.LogTieData[self.LogselectedTie - 1]
-			for r in data :
+			for r in data:
 				coreidA = r[2]
 				depth = r[6]
 				#y2 = (r[1] - self.startDepth) / ( self.length / self.gap ) + self.SPrulerStartDepth
@@ -3602,7 +3612,7 @@ class DataCanvas(wxBufferedWindow):
 				x2 = r[4]
 
 			reversed = False
-			if x1 < x2 :
+			if x1 < x2:
 				reversed = True
 
 			coreInfoA = self.findCoreInfoByIndex(coreidA)
@@ -3612,23 +3622,23 @@ class DataCanvas(wxBufferedWindow):
 				preTieNo = tieNo
 				annot_str = ""
 				rd = -999
-				if reversed == False :
+				if reversed == False:
 					tieNo, annot_str, rd = py_correlator.sagan(coreInfoB.hole, int(coreInfoB.holeCore), y1, coreInfoA.hole, int(coreInfoA.holeCore), y2, tieNo)
-				else :
+				else:
 					tieNo, annot_str, rd = py_correlator.sagan(coreInfoA.hole, int(coreInfoA.holeCore), y2, coreInfoB.hole, int(coreInfoB.holeCore), y1, tieNo)
 					temp = y2
 					y2 = y1
 					y1 = temp
 
 				self.parent.EldChange = True
-				if tieNo == 0 :
+				if tieNo == 0:
 					self.LogselectedTie = -1
 					self.drag = 0
 					#print "[DEBUG] tieNo is Zero -- then error"
 					self.parent.OnShowMessage("Error", "Could not make tie", 1)
 					return
 
-				if self.PreviewNumTies == 0 :
+				if self.PreviewNumTies == 0:
 					self.PreviewNumTies = 1
 
 				self.saganDepth = -1
@@ -3639,17 +3649,17 @@ class DataCanvas(wxBufferedWindow):
 				self.PreviewLog[4] = -1 
 				self.PreviewLog[5] = -1 
 				self.PreviewLog[6] = 1.0 
-				if self.LogAutoMode == 1 :
+				if self.LogAutoMode == 1:
 					self.LogAutoMode = 0
 					self.parent.autoPanel.OnButtonEnable(0, False)
 		
-				rey1 = int(100.0 * float(y1)) / 100.0;
-				rey2 = int(100.0 * float(y2)) / 100.0;
+				rey1 = int(100.0 * float(y1)) / 100.0
+				rey2 = int(100.0 * float(y2)) / 100.0
 				#info = str(holeA) + " " + str(coreA) + " " +str(rey2) + "\t [TieTo] Log " +str(rey1)
 				info = annot_str + " " + str(rey2) + "\t [TieTo] Log " + str(rey1)
-				if preTieNo != tieNo :
+				if preTieNo != tieNo:
 					self.parent.AddTieInfo(info, rey1)
-				else :
+				else:
 					self.parent.UpdateTieInfo(info, rey1, self.LogselectedTie)
 
 				s = "Log/Core Match: hole " + coreInfoA.hole + " core " + coreInfoA.holeCore + ": " + str(datetime.today()) + "\n"
@@ -3660,19 +3670,19 @@ class DataCanvas(wxBufferedWindow):
 				#self.SpliceData = []
 				#self.HoleData = []
 				#self.parent.OnGetData(self.parent.smoothDisplay, True)
-				if self.hole_sagan == -1 :
+				if self.hole_sagan == -1:
 					self.parent.UpdateELD(True)
-				else : 
+				else: 
 					self.OnUpdateHoleELD()
 
-				if len(self.LogTieData) >= 2 :
-					if reversed == False :
+				if len(self.LogTieData) >= 2:
+					if reversed == False:
 						data = self.LogTieData[self.LogselectedTie]
-					else :
+					else:
 						data = self.LogTieData[self.LogselectedTie - 1]
 					prevy = 0 
 					prevd = 0 
-					for r in data :
+					for r in data:
 						x, y, n, f, startx, m, d, s, t, raw = r
 						y = self.startDepth + (rd - self.SPrulerStartDepth) * (self.length / self.gap)
 						d = rd 
@@ -3683,11 +3693,11 @@ class DataCanvas(wxBufferedWindow):
 						data.remove(r)
 						data.insert(0, newtag)
 
-					if reversed == False :
+					if reversed == False:
 						data = self.LogTieData[self.LogselectedTie - 1]
-					else :
+					else:
 						data = self.LogTieData[self.LogselectedTie]
-					for r in data :
+					for r in data:
 						x, y, n, f, startx, m, d, s, t, raw = r
 						newtag = (x, prevy, n, f, startx, m, prevd, s, tieNo, raw)
 						data.remove(r)
@@ -3695,7 +3705,7 @@ class DataCanvas(wxBufferedWindow):
 
 					self.LogselectedTie = -1
 
-	def OnUpdateHoleELD(self) :
+	def OnUpdateHoleELD(self):
 		self.parent.UpdateCORE()
 		self.parent.UpdateSMOOTH_CORE()
 		self.parent.UpdateSaganTie()
@@ -3703,30 +3713,30 @@ class DataCanvas(wxBufferedWindow):
 		icount = 0
 		for data in self.HoleData:
 			for r in data:
-				if icount == self.hole_sagan :
+				if icount == self.hole_sagan:
 					hole = r 
 					l = []
 					l.append(hole)
 					self.LogSpliceData.append(l)
 					break
-			if self.LogSpliceData != [] :
+			if self.LogSpliceData != []:
 				break
 			icount += 1 
 		icount = 0
 		self.LogSpliceSmoothData = []
 		for data in self.SmoothData:
 			for r in data:
-				if icount == self.hole_sagan :
+				if icount == self.hole_sagan:
 					hole = r 
 					l = []
 					l.append(hole)
 					self.LogSpliceSmoothData.append(l)
 					break
-			if self.LogSpliceSmoothData != [] :
+			if self.LogSpliceSmoothData != []:
 				break
 			icount += 1 
 
-	def OnSortList(self, index) :
+	def OnSortList(self, index):
 		data = self.LogTieData[self.LogselectedTie]
 		data1 = self.LogTieData[self.LogselectedTie - 1]
 		self.LogTieData.remove(data)
@@ -3735,7 +3745,7 @@ class DataCanvas(wxBufferedWindow):
 		self.LogTieData.insert(index - 1, data1)
 		self.LogselectedTie = index 
 
-	def ApplySplice(self, tieIndex) :
+	def ApplySplice(self, tieIndex):
 		if tieIndex < 0:
 			print "ApplySplice: invalid tie index {}".format(tieIndex)
 			return
@@ -3786,7 +3796,7 @@ class DataCanvas(wxBufferedWindow):
 		if spliceTieB.constrained == 1:
 			spliceTieB.depth = splice_data[2]
 
-		if splice_data[1] != "" :
+		if splice_data[1] != "":
 			self.SpliceData = []
 			self.parent.filterPanel.OnLock()
 			self.parent.ParseData(splice_data[1], self.SpliceData)
@@ -3798,7 +3808,7 @@ class DataCanvas(wxBufferedWindow):
 			self.parent.splicePanel.OnButtonEnable(1, True)
 
 			s = "Constrained Splice: "	
-			if self.Constrained == 0 :
+			if self.Constrained == 0:
 				s = "Unconstrained Splice: "	
 
 			s = s + "hole " + coreA.hole + " core " + coreA.holeCore + ": " + str(datetime.today()) + "\n"
@@ -3808,7 +3818,7 @@ class DataCanvas(wxBufferedWindow):
 
 			self.parent.SpliceSectionSend(coreB.hole, coreB.holeCore, y1, "split", prevTie)
 			self.parent.SpliceSectionSend(coreA.hole, coreA.holeCore, y2, None, prevTie)
-			if prevTie > 0 :
+			if prevTie > 0:
 				self.parent.SpliceSectionSend(coreB.hole, coreB.holeCore, y1, "split", -1)
 				self.parent.SpliceSectionSend(coreA.hole, coreA.holeCore, y2, None, -1)
 
@@ -3822,37 +3832,37 @@ class DataCanvas(wxBufferedWindow):
 		self.UpdateDrawing()
 
 
-	def OnSpliceTieSelectionCb(self, event) :
+	def OnSpliceTieSelectionCb(self, event):
 		opId = event.GetId() 
 		self.activeSPTie = -1
 		self.showMenu = False
-		if opId == 1 :
-			if len(self.SpliceTieData) > 2 :
-				if self.SPselectedTie < 2 :
+		if opId == 1:
+			if len(self.SpliceTieData) > 2:
+				if self.SPselectedTie < 2:
 					self.OnUndoSplice()
-				else :
+				else:
 					self.OnClearTies(1)
-			else :
+			else:
 				if self.SpliceTieFromFile != len(self.RealSpliceTie):
 					#print "self.SpliceTieFromFile != len(self.RealSpliceTie), undo"
 					self.OnUndoSplice()
-				else :
+				else:
 					#print "self.SpliceTieFromFile == len(self.RealSpliceTie), clear ties"
 					self.OnClearTies(1)
 			self.SPselectedTie = -1
 			self.SPGuideCore = []
 			self.drag = 0 
 			self.UpdateDrawing()
-		elif opId == 2 :
+		elif opId == 2:
 			self.ApplySplice(self.SPselectedTie)
 
-	def OnClearTies(self, mode) :
-		if mode == 0 : # composite
+	def OnClearTies(self, mode):
+		if mode == 0: # composite
 			self.ClearCompositeTies()
-		elif mode == 1 : # splice
+		elif mode == 1: # splice
 			realties = len(self.RealSpliceTie)
 			curties = len(self.SpliceTieData)
-			if realties == 0 and curties <= 2 :
+			if realties == 0 and curties <= 2:
 				self.SpliceTieData = []
 			if realties >= 2 and curties <= 4:
 				self.SpliceTieData = []
@@ -3863,13 +3873,13 @@ class DataCanvas(wxBufferedWindow):
 
 			self.SPGuideCore = []
 			self.SPselectedTie = -1
-		elif mode == 2 : # log
+		elif mode == 2: # log
 			last = self.LogselectedTie + 1
 			length = last % 2
-			if length == 0 and last != 0 :
+			if length == 0 and last != 0:
 				self.LogTieData.pop(last - 1)	
 				self.LogTieData.pop(last - 2)	
-			elif length == 1 and len(self.LogTieData) != 0 : 
+			elif length == 1 and len(self.LogTieData) != 0: 
 				self.LogTieData.pop(last - 1)	
 
 			self.PreviewLog[0] = -1
@@ -3889,16 +3899,16 @@ class DataCanvas(wxBufferedWindow):
 	def MakeStraightLine(self):
 		last = len(self.LogTieData) 
 		length = last % 2
-		if length == 0 and last != 0 :
+		if length == 0 and last != 0:
 			data = self.LogTieData[last - 2]	
 			prevy = 0
 			prevd = 0
-			for r in data :
+			for r in data:
 				x, y, n, f, startx, m, d, s, t, raw = r
 				prevy = y
 				prevd = d
 			data = self.LogTieData[last - 1]	
-			for r in data :
+			for r in data:
 				x, y, n, f, startx, m, d, s, t, raw = r
 				newtag = (x, prevy, n, f, startx, m, prevd, s, t, raw)
 				data.remove(r)
@@ -3912,6 +3922,10 @@ class DataCanvas(wxBufferedWindow):
 		self.activeTie = -1
 		self.selectedTie = -1
 		self.parent.clearSend()
+		self.UpdateAffineTieCount(0)
+
+	def UpdateAffineTieCount(self, count):
+		self.affineBroadcaster.updateAffineTiePointCount(count)
 		
 	def UndoLastShift(self):
 		py_correlator.undo(1, "X", 0)
@@ -3920,7 +3934,7 @@ class DataCanvas(wxBufferedWindow):
 
 		s = "Composite undo previous offset: " + str(datetime.today()) + "\n\n"
 		self.parent.logFileptr.write(s)
-		if self.parent.showReportPanel == 1 :
+		if self.parent.showReportPanel == 1:
 			self.parent.OnUpdateReport()
 
 		self.parent.UpdateSend()
@@ -3928,16 +3942,11 @@ class DataCanvas(wxBufferedWindow):
 		self.parent.UpdateData()
 		self.parent.UpdateStratData()
 
-	def UpdateShiftedSpliceIntervals(self, hole, holeCore, below):
-		intervals = self.parent.spliceManager.findIntervals(hole, holeCore, below)
-		for interval in intervals:
-			self.parent.spliceManager.delete(interval)
-	
-	def OnTieSelectionCb(self, event) :
+	def OnTieSelectionCb(self, event):
 		opId = event.GetId() 
 		self.activeTie = -1
 		self.showMenu = False
-		if opId == 1 : # Clear Tie
+		if opId == 1: # Clear Tie
 			self.ClearCompositeTies()
 		elif opId == 4: # undo to previous offset
 			self.UndoLastShift()
@@ -3947,16 +3956,15 @@ class DataCanvas(wxBufferedWindow):
 
 			s = "Composite undo previous offset: " + str(datetime.today()) + "\n\n"
 			self.parent.logFileptr.write(s)
-			if self.parent.showReportPanel == 1 :
+			if self.parent.showReportPanel == 1:
 				self.parent.OnUpdateReport()
 
 			self.parent.UpdateSend()
 			#self.parent.UndoShiftSectionSend()
 			self.parent.UpdateData()
 			self.parent.UpdateStratData()
-			self.parent.compositePanel.OnButtonEnable(1, False)
 		elif opId == 5: # undo to offset of core above
-			if self.selectedTie >= 0 :
+			if self.selectedTie >= 0:
 				tie = self.TieData[self.selectedTie]
 				coreInfo = self.findCoreInfoByIndex(tie.core)
 
@@ -3972,7 +3980,6 @@ class DataCanvas(wxBufferedWindow):
 
 					self.parent.UpdateData()
 					self.parent.UpdateStratData()
-					self.parent.compositePanel.OnButtonEnable(1, False)
 		elif opId == 2 or opId == 3: # adjust this core and all below (2), adjust this core only (3)
 			shiftCoreOnly = (opId == 3)
 			self.OnAdjustCore(shiftCoreOnly)
@@ -3983,10 +3990,10 @@ class DataCanvas(wxBufferedWindow):
 		self.UpdateDrawing()
 
 	def OnAdjustCore(self, shiftCoreOnly, actionType=1): # tie by default
-		if self.selectedLastTie < 0 :
+		if self.selectedLastTie < 0:
 			self.selectedLastTie = len(self.TieData) - 1
 
-		if self.selectedLastTie >= 0 :
+		if self.selectedLastTie >= 0:
 			movableTie = self.TieData[self.selectedLastTie]
 			fixedTie = self.TieData[self.selectedLastTie - 1]
 			y1 = movableTie.depth
@@ -3995,80 +4002,71 @@ class DataCanvas(wxBufferedWindow):
 			#print "fixed tie depth = {}, movable tie depth = {}, shift = {}".format()
 			
 			offset = self.parent.compositePanel.GetBestOffset() if actionType == 0 else float(self.parent.compositePanel.GetDepthValue())
-			if actionType == 0 : # to best 
+			if actionType == 0: # adjust to reflect best offset
 				y1 = y1 + offset
-				shift = shift + offset 
-			elif actionType == 2 : # to given
-				# ERROR - HYEJUNG
-				y1 = y2 - offset
-				shift = offset
+				shift = shift + offset
 
 			ciA = self.findCoreInfoByIndex(movableTie.core)
 			ciB = self.findCoreInfoByIndex(fixedTie.core)
-			if not self.parent.CanAdjustCore(ciA.hole, ciA.holeCore, not shiftCoreOnly):
-				return
-
-			self.OnDataChange(movableTie.core, shift)
-			self.parent.compositePanel.OnButtonEnable(0, False)
-			self.parent.compositePanel.OnButtonEnable(1, True)
-
 			if ciA is not None and ciB is not None:
 				comment = self.parent.compositePanel.GetComment()
-				self.parent.affineManager.tie(shiftCoreOnly, ciB.hole, ciB.holeCore, round(y2, 3), ciA.hole, ciA.holeCore, round(y1, 3), ciA.type, comment)
+				proceed = self.parent.affineManager.tie(shiftCoreOnly, ciB.hole, ciB.holeCore, round(y2, 3), ciA.hole, ciA.holeCore, round(y1, 3), ciA.type, comment)
+				if proceed:
+					self.OnDataChange(movableTie.core, shift) # apply shift to self.HoleData
+					self.parent.AffineChange = True
 
-				self.parent.AffineChange = True
+					if shiftCoreOnly:
+						s = "Composite: hole " + ciA.hole + " core " + ciA.holeCore + ": " + str(datetime.today()) + "\n"
+						self.parent.logFileptr.write(s)
+					else:
+						s = "Composite(All Below): hole " + ciA.hole + " core " + ciA.holeCore + ": " + str(datetime.today()) + "\n"
+						self.parent.logFileptr.write(s)
 
-				if shiftCoreOnly:
-					s = "Composite: hole " + ciA.hole + " core " + ciA.holeCore + ": " + str(datetime.today()) + "\n"
+					s = ciA.hole + " " + ciA.holeCore + " " + str(y1) + " tied to " + ciB.hole + " " + ciB.holeCore + " " + str(y2) + "\n\n"
 					self.parent.logFileptr.write(s)
-				else:
-					s = "Composite(All Below): hole " + ciA.hole + " core " + ciA.holeCore + ": " + str(datetime.today()) + "\n"
-					self.parent.logFileptr.write(s)
 
-				s = ciA.hole + " " + ciA.holeCore + " " + str(y1) + " tied to " + ciB.hole + " " + ciB.holeCore + " " + str(y2) + "\n\n"
-				self.parent.logFileptr.write(s)
+					#py_correlator.saveAttributeFile(self.parent.CurrentDir + 'tmp.affine.table', 1)
+					self.parent.ShiftSectionSend()
 
-				#py_correlator.saveAttributeFile(self.parent.CurrentDir + 'tmp.affine.table', 1)
-				self.parent.ShiftSectionSend()
+					if self.parent.showReportPanel == 1:
+						self.parent.OnUpdateReport()
 
-				if self.parent.showReportPanel == 1 :
-					self.parent.OnUpdateReport()
+					self.parent.UpdateData()
+					self.parent.UpdateStratData()
 
-				self.parent.UpdateData()
-				self.parent.UpdateStratData()
-				self.TieData = []
-				
-				self.UpdateShiftedSpliceIntervals(ciA.hole, ciA.holeCore, not shiftCoreOnly)
+			if actionType == 0: # update graph to reflect best correlation
+				corr = self.EvaluateCorrelation(ciA.type, ciA.hole, int(ciA.holeCore), fixedTie.depth, ciB.type, ciB.hole, int(ciB.holeCore), y1)
+				if corr != "":
+					self.parent.OnAddFirstGraph(corr, fixedTie.depth, y1)
+					self.parent.OnUpdateGraph()
 
-			self.selectedTie = -1
-			self.activeTie = -1
-			self.GuideCore = []
+			self.ClearCompositeTies()
 			self.drag = 0 
 			self.UpdateDrawing()
 
 	def GetTypeID(self, typeA):
 		type = -1
-		if typeA == "Susceptibility" :
+		if typeA == "Susceptibility":
 			type = 32
-		elif typeA == "Natural Gamma" :
+		elif typeA == "Natural Gamma":
 			type = 33
-		elif typeA == "Reflectance" :
+		elif typeA == "Reflectance":
 			type = 34
-		elif typeA == "Other Type" :
+		elif typeA == "Other Type":
 			type = 35
-		elif typeA == "ODP Other1" :
+		elif typeA == "ODP Other1":
 			type = 7 
-		elif typeA == "ODP Other2" :
+		elif typeA == "ODP Other2":
 			type = 8 
-		elif typeA == "ODP Other3" :
+		elif typeA == "ODP Other3":
 			type = 9 
-		elif typeA == "ODP Other4" :
+		elif typeA == "ODP Other4":
 			type = 10 
-		elif typeA == "ODP Other5" :
+		elif typeA == "ODP Other5":
 			type = 11
-		elif typeA == "Bulk Density(GRA)" :
+		elif typeA == "Bulk Density(GRA)":
 			type = 30
-		elif typeA == "Pwave" :
+		elif typeA == "Pwave":
 			type = 31
 		return type
 		
@@ -4089,7 +4087,7 @@ class DataCanvas(wxBufferedWindow):
 	def OnUndoSplice(self):
 		lastTie = len(self.RealSpliceTie) - 1
 	
-		if lastTie >= 0 :
+		if lastTie >= 0:
 			spliceTie = self.RealSpliceTie[lastTie]
 
 			self.RealSpliceTie.pop()
@@ -4098,49 +4096,49 @@ class DataCanvas(wxBufferedWindow):
 			tieNo = 0 if spliceTie.tie == -1 else spliceTie.tie
 
 			# delete splice tie
-			if tieNo >= 0 :
+			if tieNo >= 0:
 				self.SpliceCore.pop()
 				splice_data = py_correlator.delete_splice(tieNo, self.parent.smoothDisplay)
 				py_correlator.saveAttributeFile(self.parent.CurrentDir + 'tmp.splice.table'  , 2)
 				self.parent.SpliceChange = True
-				if splice_data != "" :
+				if splice_data != "":
 					self.SpliceData = []
 					self.parent.filterPanel.OnLock()
 					self.parent.ParseData(splice_data, self.SpliceData)
 
 					self.parent.filterPanel.OnRelease()
 					self.parent.UpdateSMOOTH_SPLICE(False)
-					if self.SpliceData == [] : 
+					if self.SpliceData == []: 
 						self.parent.splicePanel.OnButtonEnable(4, False)
 
 					self.parent.UndoSpliceSectionSend()
 
 				s = "Splice undo last spliced tie: " + str(datetime.today()) + "\n\n"
 				self.parent.logFileptr.write(s)
-				if self.parent.showReportPanel == 1 :
+				if self.parent.showReportPanel == 1:
 					 self.parent.OnUpdateReport()
 
 				self.SPGuideCore = []
 				self.SPselectedTie = -1
 				
-		if len(self.RealSpliceTie) == 0 :
+		if len(self.RealSpliceTie) == 0:
 			self.parent.splicePanel.OnButtonEnable(1, False)
 			self.CurrentSpliceCore = -1 
 
 		self.SpliceTieData = []
-		if len(self.RealSpliceTie) >= 2 :
+		if len(self.RealSpliceTie) >= 2:
 			realties = len(self.RealSpliceTie) - 2
 			prevSpliceTie = self.RealSpliceTie[realties]
-			if prevSpliceTie.core >= 0 : 
+			if prevSpliceTie.core >= 0: 
 				self.SpliceTieData.append(prevSpliceTie)
 				curSpliceTie = self.RealSpliceTie[realties + 1]
 				self.CurrentSpliceCore = curSpliceTie.core
 				self.SpliceTieData.append(curSpliceTie)
-			else :
+			else:
 				self.CurrentSpliceCore = -1
 
 		ret = py_correlator.getData(2)
-		if ret != "" :
+		if ret != "":
 			self.parent.ParseSpliceData(ret, True)
 			ret = "" 
 		else:
@@ -4149,9 +4147,9 @@ class DataCanvas(wxBufferedWindow):
 		self.UpdateDrawing()
 
 	def OnMouseWheel(self, event):
-		if self.MainViewMode == True :
+		if self.MainViewMode == True:
 			self.OnMainMouseWheel(event)
-		else :
+		else:
 			self.OnAgeDepthMouseWheel(event)
 
 	def OnAgeDepthMouseWheel(self, event):
@@ -4161,26 +4159,26 @@ class DataCanvas(wxBufferedWindow):
 		rot = event.GetWheelRotation() 
 		pos = event.GetPositionTuple()
 
-		if pos[0] <= self.splicerX or self.isSecondScroll == 0:
-			if self.parent.ScrollMax > 0 :
-				if rot < 0 :
+		if pos[0] <= self.splicerX or not self.independentScroll:
+			if self.parent.ScrollMax > 0:
+				if rot < 0:
 					self.rulerStartDepth += self.rulerTickRate
-					if self.isSecondScroll == 0 : 
+					if not self.independentScroll:
 						self.SPrulerStartDepth = self.rulerStartDepth 
-				else : 
+				else: 
 					self.rulerStartDepth -= self.rulerTickRate
-					if self.rulerStartDepth < 0 :
+					if self.rulerStartDepth < 0:
 						self.rulerStartDepth = 0.0
-					if self.isSecondScroll == 0 : 
+					if not self.independentScroll:
 						self.SPrulerStartDepth = self.rulerStartDepth 
 				self.UpdateScroll(1)
-		else :
-			if self.isSecondScroll == 1 and self.parent.ScrollMax > 0 : 
-				if rot < 0 :
+		else:
+			if self.independentScroll and self.parent.ScrollMax > 0: 
+				if rot < 0:
 					self.SPrulerStartDepth += self.rulerTickRate
-				else : 
+				else: 
 					self.SPrulerStartDepth -= self.rulerTickRate
-					if self.SPrulerStartDepth < 0 :
+					if self.SPrulerStartDepth < 0:
 						self.SPrulerStartDepth = 0.0
 			self.UpdateScroll(2)
 
@@ -4189,9 +4187,9 @@ class DataCanvas(wxBufferedWindow):
 
 
 	def UpdateScroll(self, scroll_flag):
-		if scroll_flag == 1 :
+		if scroll_flag == 1:
 			rate = self.rulerStartDepth / self.parent.ScrollMax 
-		elif scroll_flag == 2 :
+		elif scroll_flag == 2:
 			rate = self.SPrulerStartDepth / self.parent.ScrollMax 
 
 		scroll_start = self.startDepth * 0.7	 
@@ -4200,32 +4198,32 @@ class DataCanvas(wxBufferedWindow):
 		scroll_y = rate * scroll_width 
 		scroll_width += scroll_start
 		scroll_y += scroll_start
-		if scroll_y < scroll_start :
+		if scroll_y < scroll_start:
 			scroll_y = scroll_start
-		if scroll_y > scroll_width :
+		if scroll_y > scroll_width:
 			scroll_y = scroll_width 
 
-		if scroll_flag == 1 :
+		if scroll_flag == 1:
 			for key, data in self.DrawData.items():
 				if key == "MovableInterface":
 					bmp, x, y = data
 					self.DrawData["MovableInterface"] = (bmp, x, scroll_y)
 
-			if self.spliceWindowOn == 1 :
+			if self.spliceWindowOn == 1:
 				bmp, x, y = self.DrawData["MovableSkin"]
 				self.DrawData["MovableSkin"] = (bmp, x, scroll_y)
 
-			if self.parent.client != None :
+			if self.parent.client != None:
 #				# self.parent.client.send("show_depth_range\t"+str(self.rulerStartDepth)+"\t"+str(self.rulerEndDepth)+"\n") # JULIAN
 				_depth = (self.rulerStartDepth + self.rulerEndDepth) / 2.0
 				self.parent.client.send("jump_to_depth\t" + str(_depth) + "\n")
 
-		if self.isSecondScroll == 0 : # if composite/splice windows scroll together, scroll splice too
+		if not self.independentScroll: # if composite/splice windows scroll together, scroll splice too
 			scroll_flag = 2
 
 		# brgtodo 4/23/2014: MovableInterface/Skin and Interface/Skin appear to be duplicating
 		# most of their behavior/logic. Refactor into a common object.
-		if scroll_flag == 2 :
+		if scroll_flag == 2:
 			bmp, x, y = self.DrawData["Interface"]
 			self.DrawData["Interface"] = (bmp, x, scroll_y)
 
@@ -4235,60 +4233,59 @@ class DataCanvas(wxBufferedWindow):
 	def OnCharUp(self, event):
 		keyid = event.GetKeyCode()
 
-		if keyid == wx.WXK_ALT :
+		if keyid == wx.WXK_ALT:
 			self.showGrid = False 
 			self.UpdateDrawing()
-		elif keyid == wx.WXK_SHIFT :
+		elif keyid == wx.WXK_SHIFT:
 			self.pressedkeyShift = 0 
 			self.UpdateDrawing()
-		elif keyid == ord("D") :
+		elif keyid == ord("D"):
 			self.pressedkeyD = 0 
 			self.UpdateDrawing()
-		elif keyid == ord("S") :
+		elif keyid == ord("S"):
 			self.pressedkeyS = 0 
 			self.UpdateDrawing()
 
 	def OnChar(self, event):
 		eventCaught = True
 		keyid = event.GetKeyCode()
-		if keyid == 127 :
-			self.TieData = [] 
-			self.GuideCore = []
-		elif keyid == 72 :
-			if self.hideTie == 1 :
+		if keyid == 127:
+			self.ClearCompositeTies()
+		elif keyid == 72:
+			if self.hideTie == 1:
 				self.hideTie = 0
-			else : 
+			else: 
 				self.hideTie = 1
-		elif keyid == ord("D") :
+		elif keyid == ord("D"):
 			self.pressedkeyD = 1 
-		elif keyid == ord("S") :
+		elif keyid == ord("S"):
 			self.pressedkeyS = 1 
-		elif keyid == wx.WXK_ALT :
+		elif keyid == wx.WXK_ALT:
 			self.showGrid = True
-		elif keyid == wx.WXK_SHIFT :
+		elif keyid == wx.WXK_SHIFT:
 			self.pressedkeyShift = 1 
-		elif keyid == wx.WXK_DOWN and self.parent.ScrollMax > 0 :
+		elif keyid == wx.WXK_DOWN and self.parent.ScrollMax > 0:
 			if self.activeTie == -1 and self.activeSPTie == -1 and self.activeSATie == -1:
-				if self.isSecondScroll == 0:
+				if not self.independentScroll:
 					self.rulerStartDepth += self.rulerTickRate
-					if self.rulerStartDepth > self.parent.ScrollMax :
+					if self.rulerStartDepth > self.parent.ScrollMax:
 						self.rulerStartDepth = self.parent.ScrollMax
 					self.SPrulerStartDepth = self.rulerStartDepth 
 				elif event.GetModifiers() & wx.MOD_SHIFT: # arrow + shift moves splice only
 					self.SPrulerStartDepth += self.rulerTickRate
 				else:
 					self.rulerStartDepth += self.rulerTickRate
-					if self.rulerStartDepth > self.parent.ScrollMax :
+					if self.rulerStartDepth > self.parent.ScrollMax:
 						self.rulerStartDepth = self.parent.ScrollMax
 
 				self.UpdateScroll(1)
-			else :
+			else:
 				self.UPDATE_TIE(False)
-		elif keyid == wx.WXK_UP and self.parent.ScrollMax > 0 :
+		elif keyid == wx.WXK_UP and self.parent.ScrollMax > 0:
 			if self.activeTie == -1 and self.activeSPTie == -1 and self.activeSATie == -1:
-				if self.isSecondScroll == 0:
+				if not self.independentScroll:
 					self.rulerStartDepth -= self.rulerTickRate
-					if self.rulerStartDepth < 0 :
+					if self.rulerStartDepth < 0:
 						self.rulerStartDepth = 0.0
 					self.SPrulerStartDepth = self.rulerStartDepth
 				elif event.GetModifiers() & wx.MOD_SHIFT: # arrow + shift moves splice only
@@ -4298,15 +4295,15 @@ class DataCanvas(wxBufferedWindow):
 					if self.rulerStartDepth < 0:
 						self.rulerStartDepth = 0
 				self.UpdateScroll(1)
-			else :
+			else:
 				self.UPDATE_TIE(True)
-		elif keyid == wx.WXK_LEFT :
+		elif keyid == wx.WXK_LEFT:
 			self.minScrollRange = self.minScrollRange - 15 
-			if self.minScrollRange < 0 :
+			if self.minScrollRange < 0:
 				self.minScrollRange = 0
-		elif keyid == wx.WXK_RIGHT :
+		elif keyid == wx.WXK_RIGHT:
 			self.minScrollRange = self.minScrollRange + 15 
-			if self.minScrollRange > self.parent.HScrollMax :
+			if self.minScrollRange > self.parent.HScrollMax:
 				self.minScrollRange = self.parent.HScrollMax 
 		else:
 			eventCaught = False
@@ -4319,12 +4316,12 @@ class DataCanvas(wxBufferedWindow):
 	# called on up/down arrow keyup only (mouse drag handled elsewhere)
 	def UPDATE_TIE(self, upflag):
 		shift_delta = self.shift_range 
-		if upflag == True :
+		if upflag == True:
 			shift_delta *= -1 
 
 		data = []
-		if self.activeTie != -1 : # update composite tie
-			if len(self.TieData) < self.activeTie :
+		if self.activeTie != -1: # update composite tie
+			if len(self.TieData) < self.activeTie:
 				self.activeTie = -1
 				return
 
@@ -4346,29 +4343,27 @@ class DataCanvas(wxBufferedWindow):
 			self.parent.TieUpdateSend(ciA.leg, ciA.site, ciA.hole, int(ciA.holeCore), ciB.hole, int(ciB.holeCore), depth, shift)
 
 			flag = self.parent.showELDPanel | self.parent.showCompositePanel | self.parent.showSplicePanel
-			# brg 2/22/2017: stifle evaluation graph for now - want to move
-			# to Python side but not a priority at the moment
-			if flag == 1 :
+			if flag == 1:
 				testret = self.EvaluateCorrelation(ciA.type, ciA.hole, int(ciA.holeCore), depth2, ciB.type, ciB.hole, int(ciB.holeCore), depth)
-				if testret != "" :
+				if testret != "":
 					self.parent.OnAddFirstGraph(testret, depth2, depth)
- 
+
 				typeA = ciA.type # needed since we don't want to modify ciA's type
-				for data_item in self.range :
-					if data_item[0] == "Natural Gamma" and ciA.type == "NaturalGamma" :
+				for data_item in self.range:
+					if data_item[0] == "Natural Gamma" and ciA.type == "NaturalGamma":
 						typeA = "Natural Gamma"
-					elif data_item[0] == "NaturalGamma" and ciA.type == "Natural Gamma" :
+					elif data_item[0] == "NaturalGamma" and ciA.type == "Natural Gamma":
 						typeA = "NaturalGamma"
-					if data_item[0] != typeA and data_item[0] != "splice" and data_item[0] != "log" :
+					if data_item[0] != typeA and data_item[0] != "splice" and data_item[0] != "log":
 						testret = self.EvaluateCorrelation(data_item[0], ciA.hole, int(ciA.holeCore), depth2, data_item[0], ciB.hole, int(ciB.holeCore), depth)
-						if testret != "" :
+						if testret != "":
 							self.parent.OnAddGraph(testret, depth2, depth)
- 
+
 				self.parent.OnUpdateGraph()
 
 
-		elif self.activeSPTie != -1 : # update splice tie
-			if len(self.SpliceTieData) < self.activeSPTie :
+		elif self.activeSPTie != -1: # update splice tie
+			if len(self.SpliceTieData) < self.activeSPTie:
 				self.activeSPTie = -1
 				return
 
@@ -4386,32 +4381,32 @@ class DataCanvas(wxBufferedWindow):
 
 			shift = prevSpliceTie.depth - curSpliceTie.depth
 			self.OnUpdateSPGuideData(self.activeCore, curSpliceTie.depth, shift)
-			if self.Constrained == 0 :
+			if self.Constrained == 0:
 				self.parent.splicePanel.OnUpdateDepth(shift)
 
 			self.parent.splicePanel.OnButtonEnable(0, True)
 			flag = self.parent.showELDPanel | self.parent.showCompositePanel | self.parent.showSplicePanel
-			if flag == 1 :
+			if flag == 1:
 				testret = py_correlator.evalcoef_splice(ciB.type, ciB.hole, int(ciB.holeCore), 
 														curSpliceTie.depth, prevSpliceTie.depth)
-				if testret != "" :
+				if testret != "":
 					self.parent.OnAddFirstGraph(testret, prevSpliceTie.depth, curSpliceTie.depth)
 
 				typeA = ciA.type # needed since we don't want to modify ciA's type
-				for data_item in self.range :
-					if data_item[0] == "Natural Gamma" and typeA == "NaturalGamma" :
+				for data_item in self.range:
+					if data_item[0] == "Natural Gamma" and typeA == "NaturalGamma":
 						typeA = "Natural Gamma"
-					elif data_item[0] == "NaturalGamma" and typeA == "Natural Gamma" :
+					elif data_item[0] == "NaturalGamma" and typeA == "Natural Gamma":
 						typeA = "NaturalGamma"
-					if data_item[0] != typeA and data_item[0] != "splice" and data_item[0] != "log" :
+					if data_item[0] != typeA and data_item[0] != "splice" and data_item[0] != "log":
 						testret = py_correlator.evalcoef_splice(data_item[0], ciB.hole, int(ciB.holeCore),
 																curSpliceTie.depth, prevSpliceTie.depth)
-						if testret != "" :
+						if testret != "":
 							self.parent.OnAddGraph(testret, prevSpliceTie.depth, curSpliceTie.depth)
 				self.parent.OnUpdateGraph()
 
-		else : # update log tie
-			if len(self.LogTieData) < self.activeSATie :
+		else: # update log tie
+			if len(self.LogTieData) < self.activeSATie:
 				self.activeSATie = -1
 				return
 
@@ -4422,7 +4417,7 @@ class DataCanvas(wxBufferedWindow):
 			y2 = 0
 			n2 = -1 
 			currentY = 0
-			for r in data :
+			for r in data:
 				x, y, n, f, startx, m, d, splicex, i, raw = r
 				n1 = n
 				x1 = x
@@ -4435,16 +4430,16 @@ class DataCanvas(wxBufferedWindow):
 			self.saganDepth = y1
 
 			data = self.LogTieData[self.activeSATie - 1]
-			for r in data :
+			for r in data:
 				x2 = r[0]
 				y2 = r[6]
 				n2 = r[2] 
 
 			coreInfo = self.findCoreInfoByIndex(n2)
 			count = 0
-			if len(self.SpliceCore) == 1 :
+			if len(self.SpliceCore) == 1:
 				self.PreviewNumTies = 0
-				for i in range(self.parent.eldPanel.fileList.GetCount()) :
+				for i in range(self.parent.eldPanel.fileList.GetCount()):
 					start = 0
 					last = 0
 					data = self.parent.eldPanel.fileList.GetString(i)
@@ -4460,7 +4455,7 @@ class DataCanvas(wxBufferedWindow):
 					count = count + 1
 
 			self.PreviewLog = [-1, -1, 1.0, 0, -1, -1, 1.0]
-			if len(self.LogTieData) == 2 or self.PreviewNumTies == 0 :
+			if len(self.LogTieData) == 2 or self.PreviewNumTies == 0:
 				self.PreviewFirstNo = self.activeSATie
 				self.PreviewLog[3] = y1 - y2
 				if self.Floating == False:
@@ -4469,45 +4464,48 @@ class DataCanvas(wxBufferedWindow):
 					self.PreviewLog[2] = (y1 - self.FirstDepth) / (y2 - self.FirstDepth)
 					self.PreviewLog[3] = y1 - y2
 
-					if (self.activeSATie + 2) < len(self.LogTieData) :
+					if (self.activeSATie + 2) < len(self.LogTieData):
 						data = self.LogTieData[self.activeSATie + 1]
-						for r in data :
+						for r in data:
 							y3 = r[6]
 						self.PreviewLog[4] = y2
 						self.PreviewLog[5] = y3
 						self.PreviewLog[6] = (y3 - y1) / (y3 - y2)
-			else :
+			else:
 				y3 = 0
 				data = self.LogTieData[self.activeSATie - 2]
-				for r in data :
+				for r in data:
 					y3 = r[6]
 				self.PreviewLog[2] = (y1 - y3) / (y2 - y3)
 				self.PreviewLog[0] = y3
 				self.PreviewLog[1] = y2
-				if (self.activeSATie + 2) < len(self.LogTieData) :
+				if (self.activeSATie + 2) < len(self.LogTieData):
 					data = self.LogTieData[self.activeSATie + 1]
-					for r in data :
+					for r in data:
 						y3 = r[6]
 					self.PreviewLog[4] = y2
 					self.PreviewLog[5] = y3
 					self.PreviewLog[6] = (y3 - y1) / (y3 - y2)
 
 			flag = self.parent.showELDPanel | self.parent.showCompositePanel | self.parent.showSplicePanel
-			if coreInfo.hole != 'x' and flag == 1 :
+			if coreInfo.hole != 'x' and flag == 1:
 				testret = py_correlator.evalcoefLog(coreInfo.hole, int(coreInfo.holeCore), y2, y1)
-				if testret != "" :
+				if testret != "":
 					self.parent.OnAddFirstGraph(testret, y2, y1)
 					self.parent.OnUpdateGraph()
 
 
 	def OnRMouse(self, event):
-		if self.MainViewMode == True :
+		if self.MainViewMode == True:
 			self.OnMainRMouse(event)
-		else :
+		else:
 			self.OnAgeDepthRMouse(event)
 
 	def OnAgeDepthRMouse(self, event):
 		pass
+
+	def OnBreakTie(self, event, holecore):
+		self.parent.affineManager.breakTie(holecore)
 
 	def OnMainRMouse(self, event):
 		pos = event.GetPositionTuple()
@@ -4518,7 +4516,7 @@ class DataCanvas(wxBufferedWindow):
 		half = dotsize_y / 2
 
 		count = 0
-		for data in self.TieData:
+		for data in self.TieData: # handle context-click on in-progress tie points
 			y = self.startDepth + (data.depth - self.rulerStartDepth) * (self.length / self.gap)
 			x = (data.hole * self.holeWidth) + (data.hole * 50) + 50 - self.minScrollRange
 			reg = None
@@ -4529,7 +4527,7 @@ class DataCanvas(wxBufferedWindow):
 				self.showMenu = True
 				popupMenu = wx.Menu()
 				# create Menu
-				if data.fixed == 0 : # movable tie	
+				if data.fixed == 0: # movable tie	
 					popupMenu.Append(2, "&Shift this core and all related cores below")
 					wx.EVT_MENU(popupMenu, 2, self.OnTieSelectionCb)
 					popupMenu.Append(3, "&Shift this core only")
@@ -4542,12 +4540,21 @@ class DataCanvas(wxBufferedWindow):
 				return
 			count = count + 1
 
+		# handle right-click on an existing tie arrow
+		for holecore, rect in self.AffineTieArrows:
+			if rect.Inside(wx.Point(pos[0], pos[1])):
+				popupMenu = wx.Menu()
+				popupMenu.Append(2, "Break TIE to {}".format(holecore))
+				wx.EVT_MENU(popupMenu, 2, lambda evt, hc=holecore: self.OnBreakTie(evt, hc))
+				self.parent.PopupMenu(popupMenu, pos)
+				break
+
 		count = 0
 		for spliceTie in self.SpliceTieData:
 			y = self.startDepth + (spliceTie.depth - self.SPrulerStartDepth) * (self.length / self.gap)
 			x = self.splicerX + 50
 			reg = None
-			if (count % 2) == 1 :
+			if (count % 2) == 1:
 				x += self.holeWidth + 50
 			reg = wx.Rect(x - half, y - half, dotsize_x, dotsize_y)
 
@@ -4558,7 +4565,7 @@ class DataCanvas(wxBufferedWindow):
 				# create Menu
 				popupMenu.Append(1, "&Clear")
 				wx.EVT_MENU(popupMenu, 1, self.OnSpliceTieSelectionCb)
-				if spliceTie.fixed == 0 : # move tie
+				if spliceTie.fixed == 0: # move tie
 					popupMenu.Append(2, "&Set")
 					wx.EVT_MENU(popupMenu, 2, self.OnSpliceTieSelectionCb)
 				self.parent.PopupMenu(popupMenu, event.GetPositionTuple())
@@ -4567,11 +4574,11 @@ class DataCanvas(wxBufferedWindow):
 
 		count = 0
 		for data in self.LogTieData:
-			for r in data :
+			for r in data:
 				x = self.splicerX + self.holeWidth + 100
 				y = self.startDepth + (r[6] - self.SPrulerStartDepth) * (self.length / self.gap)
 				reg = None
-				if (count % 2) == 1 :
+				if (count % 2) == 1:
 					x += self.holeWidth + 50
 				reg = wx.Rect(x - half, y - half, dotsize_x, dotsize_y)
 
@@ -4582,20 +4589,20 @@ class DataCanvas(wxBufferedWindow):
 					# create Menu
 					popupMenu.Append(1, "&Clear")
 					wx.EVT_MENU(popupMenu, 1, self.OnLogTieSelectionCb)
-					if r[3] == 0 : # move tie	
+					if r[3] == 0: # move tie	
 						popupMenu.Append(2, "&Set")
 						wx.EVT_MENU(popupMenu, 2, self.OnLogTieSelectionCb)
 					self.parent.PopupMenu(popupMenu, event.GetPositionTuple())
 					return
 			count = count + 1
 
-		if pos[0] <= self.splicerX :
-			for mouse in self.DrawData["MouseInfo"] :
+		if pos[0] <= self.splicerX:
+			for mouse in self.DrawData["MouseInfo"]:
 				if self.findCoreInfoByIndex(mouse[0]) != None:
 					popupMenu = wx.Menu()
 					#popupMenu.Append(4, "&Undo last shift")
 					#wx.EVT_MENU(popupMenu, 4, self.OnTieSelectionCb)
-					if self.parent.client != None :
+					if self.parent.client != None:
 						popupMenu.Append(3, "&Show it on Corelyzer")
 						wx.EVT_MENU(popupMenu, 3, self.OnSetQTCb)
 					self.parent.PopupMenu(popupMenu, event.GetPositionTuple())
@@ -4611,9 +4618,9 @@ class DataCanvas(wxBufferedWindow):
 				w, h = bmp.GetWidth(), bmp.GetHeight()
 				reg = wx.Rect(x, y, w, h)
 				if reg.Inside(wx.Point(pos[0], pos[1])):				 
-					if self.isSecondScroll == 1 :
+					if self.independentScroll and self.spliceWindowOn == 1:
 						self.grabScrollB = 1	
-					elif self.isSecondScroll == 0 :
+					elif not self.independentScroll:# or self.spliceWindowOn == 0:
 						self.grabScrollA = 1	
 					self.UpdateDrawing()
 			elif key == "MovableInterface":
@@ -4624,7 +4631,7 @@ class DataCanvas(wxBufferedWindow):
 				if reg.Inside(wx.Point(pos[0], pos[1])):				 
 					self.grabScrollA = 1	
 					self.UpdateDrawing()
-			elif key == "MovableSkin" and self.spliceWindowOn == 1 :
+			elif key == "MovableSkin" and self.spliceWindowOn == 1:
 				bmp, x, y = data
 				x = x + self.splicerX - 40
 				w, h = bmp.GetWidth(), bmp.GetHeight()
@@ -4640,17 +4647,17 @@ class DataCanvas(wxBufferedWindow):
 				if reg.Inside(wx.Point(pos[0], pos[1])):				 
 					self.grabScrollC = 1	
 
-		if self.MainViewMode == True :
+		if self.MainViewMode == True:
 			self.OnMainLMouse(event)
-		else :
+		else:
 			self.OnAgeDepthLMouse(event)
 
 
 	def OnAgeDepthLMouse(self, event):
-		if self.AgeEnableDrag == True :
+		if self.AgeEnableDrag == True:
 			pos = event.GetPositionTuple()
-			for data in self.DrawData["CoreArea"] :
-				for r in data :
+			for data in self.DrawData["CoreArea"]:
+				for r in data:
 					n, x, y, w, h, min, max, hole_idx = r
 					reg = wx.Rect(x, y, w, h)
 					if reg.Inside(wx.Point(pos[0], pos[1])):
@@ -4705,13 +4712,13 @@ class DataCanvas(wxBufferedWindow):
 
 		count = 0
 		for data in self.LogTieData:
-			for r in data :
-				if (count % 2) == 1 : 
+			for r in data:
+				if (count % 2) == 1: 
 					y = self.startDepth + (r[6] - self.SPrulerStartDepth) * (self.length / self.gap)
 					x = self.splicerX + self.holeWidth * 2 + 150
 					reg = wx.Rect(r[0] - half, y - half, dotsize_x, dotsize_y)
 					if reg.Inside(wx.Point(pos[0], pos[1])):
-						if r[3] == 0 : 
+						if r[3] == 0: 
 							self.LogselectedTie = count
 							self.activeSATie = count
 							return
@@ -4720,10 +4727,10 @@ class DataCanvas(wxBufferedWindow):
 
 		# grab core --> for copy core to splice space
 		if self.selectScroll == 0 and self.grabScrollC == 0: # avoid dragging core during horizontal scroll
-			if pos[0] <= self.splicerX :
+			if pos[0] <= self.splicerX:
 				for key, data in self.DrawData.items():
 					if key == "CoreArea":
-						for s in data :
+						for s in data:
 							area = s
 							for r in area:
 								n, x, y, w, h, min, max, hole_idx = r
@@ -4731,10 +4738,10 @@ class DataCanvas(wxBufferedWindow):
 								if reg.Inside(wx.Point(pos[0], pos[1])):
 									self.grabCore = n
 
-			if pos[0] > self.splicerX :
+			if pos[0] > self.splicerX:
 				for key, data in self.DrawData.items():
 					if key == "SpliceArea":
-						for s in data :
+						for s in data:
 							area = s
 							for r in area:
 								n, x, y, w, h, min, max = r
@@ -4743,11 +4750,11 @@ class DataCanvas(wxBufferedWindow):
 									self.SPgrabCore = n
 
 		# make tie 
-		if self.pressedkeyShift == 1 :
-			if self.drag == 0 :
+		if self.pressedkeyShift == 1:
+			if self.drag == 0:
 				for key, data in self.DrawData.items():
 					if key == "CoreArea":
-						for s in data :
+						for s in data:
 							area = s 
 							for r in area:
 								n, x, y, w, h, min, max, hole_idx = r
@@ -4760,10 +4767,10 @@ class DataCanvas(wxBufferedWindow):
 									self.currentStartX = min
 									self.currentHole = hole_idx 
 									break
-							if self.drag == 1 :
+							if self.drag == 1:
 								break
 					elif key == "SpliceArea":
-						for s in data :
+						for s in data:
 							area = s 
 							for r in area:
 								n, x, y, w, h, min, max = r
@@ -4776,10 +4783,10 @@ class DataCanvas(wxBufferedWindow):
 									self.currentStartX = min 
 									self.spliceTie = 1
 									break
-							if self.drag == 1 :
+							if self.drag == 1:
 								break
-					elif key == "LogArea" :
-						for s in data :
+					elif key == "LogArea":
+						for s in data:
 							area = s 
 							for r in area:
 								n, x, y, w, h, min, max = r
@@ -4792,7 +4799,7 @@ class DataCanvas(wxBufferedWindow):
 									self.currentStartX = min 
 									self.logTie = 1
 									break
-							if self.drag == 1 :
+							if self.drag == 1:
 								break
 
 	def OnDataChange(self, core, shift):
@@ -4806,7 +4813,7 @@ class DataCanvas(wxBufferedWindow):
 						if coredata[0] == coreInfo.holeCore and count != 0:
 							valuelist = coredata[10]
 							count = 0
-							for v in valuelist :
+							for v in valuelist:
 								x, y = v
 								x = x + shift
 								news = (x, y)
@@ -4826,8 +4833,8 @@ class DataCanvas(wxBufferedWindow):
 		if temp_type == "Natural Gamma":
 			temp_type = "NaturalGamma"
 		smooth_id = -1
-		for r in self.range :
-			if r[0] == temp_type :
+		for r in self.range:
+			if r[0] == temp_type:
 				smooth_id = r[4]
 				break
 
@@ -4838,7 +4845,7 @@ class DataCanvas(wxBufferedWindow):
 				holeInfo = record[0]
 				if holeInfo[7] == coreInfo.hole and holeInfo[2] == coreInfo.type:
 					count = 0
-					for coredata in record : 
+					for coredata in record: 
 						if coredata[0] == coreInfo.holeCore and count != 0:
 							valuelist = coredata[10]
 							for v in valuelist:
@@ -4865,7 +4872,7 @@ class DataCanvas(wxBufferedWindow):
 				holeInfo = record[0]
 				if holeInfo[7] == coreInfo.hole and holeInfo[2] == coreInfo.type:
 					count = 0
-					for coredata in record :
+					for coredata in record:
 						if coredata[0] == coreInfo.holeCore and count != 0:
 							valuelist = coredata[10]
 							for v in valuelist:
@@ -4917,7 +4924,7 @@ class DataCanvas(wxBufferedWindow):
 					typeMax = r[2]
 					if r[3] != 0.0:
 						typeCoefRange = self.holeWidth / r[3]
-					else :
+					else:
 						self.coefRange = 0
 					drawSmooth = (r[4] > 0) # type 0 = Unsmoothed, 1 = SmoothedOnly 2 = Smoothed&Unsmoothed
 					break
@@ -4944,9 +4951,9 @@ class DataCanvas(wxBufferedWindow):
 					break
 
 	def OnDrawGuide(self):
-		if self.selectedTie < 0 :
+		if self.selectedTie < 0:
 			return
-		else :
+		else:
 			fixedTie = self.TieData[self.selectedTie - 1]
 			self.guideCore = fixedTie.core
 
@@ -4962,52 +4969,7 @@ class DataCanvas(wxBufferedWindow):
 	def GetDataInfo(self, coreindex):
 		coreInfo = self.findCoreInfoByIndex(coreindex)
 		return (coreInfo.hole, int(coreInfo.holeCore), coreInfo.type, coreInfo.quality, coreInfo.holeCount)
-	
-	# Return dictionary keyed on hole name. Each value is a list of (core, mbsf, mcd, growthRate)
-	# tuples in core order. growthRate is based on all previous cores, i.e. the growth rate for
-	# core A5 is determined by shifts of A1-A4. Growth rate at topmost core is a default of 1.0.
-	def GetGrowthRateData(self):
-		coreDict = {}
-		for hole in self.HoleData:
-			holeName = hole[0][0][7]
-			if holeName not in coreDict:
-				coreDict[holeName] = {}
 
-			# gather core data: core sets may be inconsistent for different datatypes in same hole
-			mbsfVals = []
-			mcdVals = []
-			for core in hole[0][1:len(hole[0])]:
-				coreName = core[0]
-				if coreName not in coreDict[holeName]:
-					mcd = core[9][0] # first element in section depth list
-					mcdVals.append(mcd)
-					mbsf = mcd - core[5] # offset
-					mbsfVals.append(mbsf)
-					numVals = len(mbsfVals)
-					if numVals == 1:
-						growthRate = 1.0
-					elif numVals == 2:
-						 # insufficient points to compute rate at second core, use mcd of top core
-						 # brgtodo - better default for growth rate here?
-						growthRate = mcdVals[0]
-					else:
-						lastElt = numVals - 1
-						rawGrowthTuple = numpy.polyfit(mbsfVals[:lastElt], mcdVals[:lastElt], 1)
-						growthRate = round(rawGrowthTuple[0], 3)
-					coreDict[holeName][coreName] = (coreName, mbsf, mcd, growthRate)
-		
-		# create lists of core tuples sorted by core name, add to outCoreDict (keyed on hole name)
-		outCoreDict = {}
-		for hole in coreDict:
-			sortedList = []
-			sortedCoreTuples = sorted(coreDict[hole], key=int)
-			for key in sortedCoreTuples:
-				sortedList.append(coreDict[hole][key])
-			outCoreDict[hole] = sortedList
-				
-		#print "outCoreDict = {}".format(outCoreDict)
-		return outCoreDict
-	
 	def GetFixedCompositeTie(self):
 		if len(self.TieData) >= 1:
 			return self.TieData[0]
@@ -5027,61 +4989,61 @@ class DataCanvas(wxBufferedWindow):
 
 	def UpdateAgeModel(self):
 		space_bar = ""
-		if platform_name[0] == "Windows" :
+		if platform_name[0] == "Windows":
 			space_bar = " "
 
 		# 9/23/2013 brgtodo duplication
-		for data in self.StratData :
+		for data in self.StratData:
 			for r in data:
 				order, hole, name, label, start, stop, rawstart, rawstop, age, type = r 
 				strItem = ""
-				bm0 = int(100.0 * float(rawstart)) / 100.0;
+				bm0 = int(100.0 * float(rawstart)) / 100.0
 				str_ba = str(bm0)
 				max_ba = len(str_ba)
 				start_ba = str_ba.find('.', 0)
 				str_ba = str_ba[start_ba:max_ba]
 				max_ba = len(str_ba)
-				if max_ba < 3 :
+				if max_ba < 3:
 					strItem = strItem + str(bm0) + "0 \t"
-				else :
+				else:
 					strItem = strItem + str(bm0) + space_bar + "\t"
 
-				bm = int(100.0 * float(start)) / 100.0;
+				bm = int(100.0 * float(start)) / 100.0
 				str_ba = str(bm)
 				max_ba = len(str_ba)
 				start_ba = str_ba.find('.', 0)
 				str_ba = str_ba[start_ba:max_ba]
 				max_ba = len(str_ba)
-				if max_ba < 3 :
+				if max_ba < 3:
 					strItem += str(bm) + "0 \t" + str(bm) + "0 \t"
-				else :
+				else:
 					strItem += str(bm) + space_bar + "\t" + str(bm) + space_bar + " \t"
 
-				ba = int(1000.0 * float(age)) / 1000.0;
+				ba = int(1000.0 * float(age)) / 1000.0
 				str_ba = str(ba)
 				max_ba = len(str_ba)
 				start_ba = str_ba.find('.', 0)
 				str_ba = str_ba[start_ba:max_ba]
 				max_ba = len(str_ba)
-				if max_ba < 3 :
+				if max_ba < 3:
 					strItem += str(ba) + "0 \t" + label 
-				else :
+				else:
 					strItem += str(ba) + space_bar + "\t" + label 
 				ret = self.parent.agePanel.OnAddAgeToListAt(strItem, int(order))
-				if ret >= 0 :
+				if ret >= 0:
 					self.AgeDataList.insert(int(order), ((self.SelectedAge, start, rawstart, age, name, label, type, 0.0)))
 
 	def OnMouseUp(self, event):
 		self.SetFocusFromKbd()
-		if self.MainViewMode == True : 
+		if self.MainViewMode == True: 
 			self.OnMainMouseUp(event)
-		else :
+		else:
 			self.OnAgeDepthMouseUp(event)
 
 	def OnAgeDepthMouseUp(self, event):
-		if self.SelectedAge >= 0 :
+		if self.SelectedAge >= 0:
 			pos = event.GetPositionTuple()
-			if self.drag == 1 :
+			if self.drag == 1:
 				pos = event.GetPositionTuple()
 				#self.AgeShiftX = self.AgeShiftX + pos[0] - self.mouseX
 				#self.AgeShiftY = self.AgeShiftY + pos[1] - self.mouseY
@@ -5093,7 +5055,7 @@ class DataCanvas(wxBufferedWindow):
 				label = ""
 				name = ""
 				type = ""
-				if self.SelectedAge < strat_size :
+				if self.SelectedAge < strat_size:
 					data = self.StratData[self.SelectedAge]
 					for r in data:
 						rawstart = r[6]
@@ -5111,16 +5073,16 @@ class DataCanvas(wxBufferedWindow):
 
 						mcd = depth
 						rate = py_correlator.getMcdRate(depth)
-						if self.mbsfDepthPlot == 1 : # if mbsf
+						if self.mbsfDepthPlot == 1: # if mbsf
 							mcd = depth * rate 
-						else :
+						else:
 							depth = mcd / rate 
 
 						l = r[0], r[1], r[2], r[3], mcd, r[5], depth, r[7], age, r[9]
 						data.pop(0)
 						data.insert(0, l)
 
-				else :
+				else:
 					data = self.UserdefStratData[self.SelectedAge - strat_size]
 					for r in data:
 						#name, mcd, depth, age, comment
@@ -5134,16 +5096,16 @@ class DataCanvas(wxBufferedWindow):
 						depth = (pos[1] - self.startAgeDepth - self.AgeShiftY) * (1.0 * self.ageGap / self.ageYLength) + self.rulerStartAgeDepth
 						mcd = depth 
 						rate = py_correlator.getMcdRate(depth)
-						if self.mbsfDepthPlot == 1 : # if mbsf
+						if self.mbsfDepthPlot == 1: # if mbsf
 							mcd = depth * rate 
-						else :
+						else:
 							depth = mcd / rate 
 						l = label, mcd, depth, age, name
 						data.pop(0)
 						data.insert(0, l)
 				self.parent.AgeChange = True
 				self.UpdateDrawing()
-			elif self.AgeEnableDrag == False :
+			elif self.AgeEnableDrag == False:
 				strat_size = len(self.StratData) 
 				data = None
 				rawstart = 0.0
@@ -5152,7 +5114,7 @@ class DataCanvas(wxBufferedWindow):
 				label = ""
 				name = ""
 				type = ""
-				if self.SelectedAge < strat_size :
+				if self.SelectedAge < strat_size:
 					data = self.StratData[self.SelectedAge]
 					for r in data:
 						rawstart = r[6]
@@ -5161,7 +5123,7 @@ class DataCanvas(wxBufferedWindow):
 						label = r[3] 
 						name = r[2] 
 						type = r[9] 
-				else :
+				else:
 					data = self.UserdefStratData[self.SelectedAge - strat_size]
 					for r in data:
 						#name, mcd, depth, age, comment
@@ -5173,7 +5135,7 @@ class DataCanvas(wxBufferedWindow):
 						type = "handpick" 
 
 				strItem = ""
-				bm0 = int(100.00 * float(rawstart)) / 100.00;
+				bm0 = int(100.00 * float(rawstart)) / 100.00
 				str_ba = str(bm0)
 				max_ba = len(str_ba)
 				start_ba = str_ba.find('.', 0)
@@ -5181,67 +5143,67 @@ class DataCanvas(wxBufferedWindow):
 				max_ba = len(str_ba)
 
 				# 9/23/2013 brgtodo duplication candidate
-				if platform_name[0] != "Windows" :
-					if max_ba < 3 :
+				if platform_name[0] != "Windows":
+					if max_ba < 3:
 						strItem = strItem + str(bm0) + "0 \t"
-					else :
+					else:
 						strItem = strItem + str(bm0) + "\t"
 
-					bm = int(100.00 * float(start)) / 100.00;
+					bm = int(100.00 * float(start)) / 100.00
 					str_ba = str(bm)
 					max_ba = len(str_ba)
 					start_ba = str_ba.find('.', 0)
 					str_ba = str_ba[start_ba:max_ba]
 					max_ba = len(str_ba)
-					if max_ba < 3 :
+					if max_ba < 3:
 						strItem += str(bm) + "0 \t" + str(bm) + "0 \t"
-					else :
+					else:
 						strItem += str(bm) + "\t" + str(bm) + "\t"
 
-					ba = int(1000.00 * float(age)) / 1000.00;
+					ba = int(1000.00 * float(age)) / 1000.00
 					str_ba = str(ba)
 					max_ba = len(str_ba)
 					start_ba = str_ba.find('.', 0)
 					str_ba = str_ba[start_ba:max_ba]
 					max_ba = len(str_ba)
-					if max_ba < 3 :
+					if max_ba < 3:
 						strItem += str(ba) + "0 \t" + label 
-					else :
+					else:
 						strItem += str(ba) + "\t" + label 
-					if type == "handpick"  :
+					if type == "handpick":
 						strItem += " *handpick"
-				else :
-					if max_ba < 3 :
+				else:
+					if max_ba < 3:
 						strItem = strItem + str(bm0) + "0 \t"
-					else :
+					else:
 						strItem = strItem + str(bm0) + " \t"
 
-					bm = int(100.00 * float(start)) / 100.00;
+					bm = int(100.00 * float(start)) / 100.00
 					str_ba = str(bm)
 					max_ba = len(str_ba)
 					start_ba = str_ba.find('.', 0)
 					str_ba = str_ba[start_ba:max_ba]
 					max_ba = len(str_ba)
-					if max_ba < 3 :
+					if max_ba < 3:
 						strItem += str(bm) + "0 \t" + str(bm) + "0 \t"
-					else :
+					else:
 						strItem += str(bm) + " \t" + str(bm) + " \t"
 
-					ba = int(1000.00 * float(age)) / 1000.00;
+					ba = int(1000.00 * float(age)) / 1000.00
 					str_ba = str(ba)
 					max_ba = len(str_ba)
 					start_ba = str_ba.find('.', 0)
 					str_ba = str_ba[start_ba:max_ba]
 					max_ba = len(str_ba)
-					if max_ba < 3 :
+					if max_ba < 3:
 						strItem += str(ba) + "0 \t" + label 
-					else :
+					else:
 						strItem += str(ba) + " \t" + label 
-					if type == "handpick"  :
+					if type == "handpick":
 						strItem += " *handpick"                                       
 
 				ret = self.parent.agePanel.OnAddAgeToList(strItem)
-				if ret >= 0 :
+				if ret >= 0:
 					self.AgeDataList.insert(ret, (self.SelectedAge, start, rawstart, age, name, label, type, 0.0))
 					self.parent.TimeChange = True
 					self.UpdateDrawing()
@@ -5256,7 +5218,7 @@ class DataCanvas(wxBufferedWindow):
 	def OnMainMouseUp(self, event):
 		pos = event.GetPositionTuple()
 
-		if self.showMenu == True :
+		if self.showMenu == True:
 			self.selectedTie = -1
 			self.activeTie = -1
 			self.showMenu = False
@@ -5269,7 +5231,7 @@ class DataCanvas(wxBufferedWindow):
 			return
 
 		self.selectScroll = 0
-		if self.grabScrollA == 1 :
+		if self.grabScrollA == 1:
 			self.UpdateScrollA(pos)
 
 			self.grabScrollA = 0
@@ -5277,13 +5239,13 @@ class DataCanvas(wxBufferedWindow):
 			self.UpdateDrawing()
 			return
 
-		if self.grabScrollB == 1 :
+		if self.grabScrollB == 1:
 			scroll_start = self.startDepth * 0.7
 			scroll_y = pos[1] - scroll_start
-			if scroll_y < scroll_start :
+			if scroll_y < scroll_start:
 				scroll_y = scroll_start
 			scroll_width = self.Height - (self.startDepth * 1.6)
-			if scroll_y > scroll_width :
+			if scroll_y > scroll_width:
 				scroll_y = scroll_width
 
  			bmp, x, y = self.DrawData["Interface"]
@@ -5298,17 +5260,17 @@ class DataCanvas(wxBufferedWindow):
 
 			self.grabScrollB = 0
 			self.UpdateDrawing()
-			return ;
+			return 
 
-		if self.grabScrollC == 1 :
+		if self.grabScrollC == 1:
 			scroll_start = self.compositeX
 			scroll_x = pos[0]
-			if scroll_x < scroll_start :
+			if scroll_x < scroll_start:
 				scroll_x = scroll_start
 
 			# brgtodo 5/12/2014 unclear how startDepth is related to horizontal positioning
 			scroll_width = self.splicerX - (self.startDepth * 2.3)
-			if scroll_x > scroll_width :
+			if scroll_x > scroll_width:
 				scroll_x = scroll_width
 
 			bmp, x, y = self.DrawData["HScroll"]
@@ -5320,17 +5282,17 @@ class DataCanvas(wxBufferedWindow):
 
 			self.grabScrollC = 0
 			self.UpdateDrawing()
-			return ;
+			return 
 
-		if pos[0] >= self.splicerX :
-			if self.grabCore >= 0 :
-				if self.parent.splicePanel.appendall == 1 :
+		if pos[0] >= self.splicerX:
+			if self.grabCore >= 0:
+				if self.parent.splicePanel.appendall == 1:
 					self.parent.OnShowMessage("Error", "Appending all blocks more splicing", 1)
 					self.grabCore = -1
 					return
 
 				# grab by default
-				if self.isLogMode == 1 and self.parent.splicedOpened == 0 : 
+				if self.isLogMode == 1 and self.parent.splicedOpened == 0: 
 					ret = self.GetDataInfo(self.grabCore)
 					type = self.GetTypeID(ret[2])
 					sagan_hole = ret[4]
@@ -5340,8 +5302,8 @@ class DataCanvas(wxBufferedWindow):
 					type_temp = ret[2]
 
 					smooth_id = -1 
-					for r in self.range :
-						if r[0] == ret[2] :
+					for r in self.range:
+						if r[0] == ret[2]:
 							smooth_id = r[4] 
 							break
 
@@ -5349,12 +5311,12 @@ class DataCanvas(wxBufferedWindow):
 					self.SpliceSmoothData = []
 					# 0(unsmooth), 1(smooth), 2(both)
 					ret = py_correlator.getHoleData(sagan_hole, 0)
-					if ret != "" :
+					if ret != "":
 						self.parent.filterPanel.OnLock()
 						self.parent.ParseData(ret, self.SpliceData)
 						self.parent.filterPanel.OnRelease()
 					ret = py_correlator.getHoleData(sagan_hole, 2)
-					if ret != "" :
+					if ret != "":
 						self.parent.filterPanel.OnLock()
 						self.parent.ParseData(ret, self.SpliceSmoothData)
 						self.parent.filterPanel.OnRelease()
@@ -5369,40 +5331,40 @@ class DataCanvas(wxBufferedWindow):
 					icount = 0
 					for data in self.SmoothData:
 						for r in data:
-							if icount == sagan_hole :
+							if icount == sagan_hole:
 								hole = r 
 								l = []
 								l.append(hole)
 								self.LogSpliceSmoothData.append(l)
 								break
-						if self.LogSpliceSmoothData != [] :
+						if self.LogSpliceSmoothData != []:
 							break
 						icount += 1 
 					icount = 0
 					for data in self.HoleData:
 						for r in data:
-							if icount == sagan_hole :
+							if icount == sagan_hole:
 								hole = r 
 								l = []
 								l.append(hole)
 								self.LogSpliceData.append(l)
 								break
-						if self.LogSpliceData != [] :
+						if self.LogSpliceData != []:
 							break
 						icount += 1 
 
 					new_r = None
 					splice_range = None
-					if type_temp == "Natural Gamma" :
+					if type_temp == "Natural Gamma":
 						type_temp = "NaturalGamma"
-					for r in self.range :
-						if r[0] == type_temp :
+					for r in self.range:
+						if r[0] == type_temp:
 							new_r = r 
-						elif r[0] == "splice" :
+						elif r[0] == "splice":
 							splice_range = r
 
 					newrange = "splice", new_r[1], new_r[2], new_r[3], smooth_id, new_r[5] 
-					if splice_range != None :
+					if splice_range != None:
 						self.range.remove(splice_range)
 					self.range.append(newrange)
 
@@ -5420,13 +5382,13 @@ class DataCanvas(wxBufferedWindow):
 				self.grabCore = -1
 				self.UpdateDrawing()
 				return
-		else :
+		else:
 			self.grabCore = -1
 
 		# handle core dragged from splice area to composite area
-		if pos[0] < self.splicerX :
-			if self.SPgrabCore >= 0 :
-				if self.isLogMode == 1 : 
+		if pos[0] < self.splicerX:
+			if self.SPgrabCore >= 0:
+				if self.isLogMode == 1: 
 					self.LogSpliceData = []
 					self.LogSpliceSmoothData = []
 					self.SpliceData = []
@@ -5445,7 +5407,7 @@ class DataCanvas(wxBufferedWindow):
 					self.parent.UndoSpliceSectionSend()
 					self.selectedType = "" 
 
-					if self.isLogMode == 1 : 
+					if self.isLogMode == 1: 
 						self.LogSpliceData = []
 						#self.LogTieData=[]
 						py_correlator.fixed_sagan()
@@ -5458,15 +5420,15 @@ class DataCanvas(wxBufferedWindow):
 				self.SPgrabCore = -1
 				self.UpdateDrawing()
 				return
-		else :
+		else:
 			self.SPgrabCore = -1
 
-		if self.selectScroll == 1 :
+		if self.selectScroll == 1:
 			self.selectScroll = 0 
 			return
 
 		currentY = pos[1]
-		if self.selectedTie >= 0 : 
+		if self.selectedTie >= 0: 
 			tie = self.TieData[self.selectedTie]
 			if self.selectedCore != tie.core:
 				return
@@ -5490,7 +5452,7 @@ class DataCanvas(wxBufferedWindow):
 			self.parent.spliceManager.setDirty()
 			self.parent.spliceIntervalPanel.UpdateUI()
 
-		if self.SPselectedTie >= 0 :
+		if self.SPselectedTie >= 0:
 			spliceTie = self.SpliceTieData[self.SPselectedTie]
 			self.SPselectedLastTie = self.SPselectedTie 
 
@@ -5499,13 +5461,13 @@ class DataCanvas(wxBufferedWindow):
 			spliceTie.y = pos[1]
 			spliceTie.depth = newDepth
 
-			if self.Constrained == 1 :
+			if self.Constrained == 1:
 				prevSpliceTie = self.SpliceTieData[self.SPselectedTie - 1]
 				prevSpliceTie.y = pos[1]
 				prevSpliceTie.depth = newDepth
 			self.parent.splicePanel.OnButtonEnable(3, True)
 
-			if self.SPselectedTie < 2 :
+			if self.SPselectedTie < 2:
 				if self.SpliceTieData[0].core == spliceTie.core or self.SpliceTieData[1].core == spliceTie.core:
 					spliceTies = len(self.SpliceTieData)
 					if spliceTies > 2 or spliceTies == 4:
@@ -5513,9 +5475,9 @@ class DataCanvas(wxBufferedWindow):
 
 			self.SPselectedTie = -1 
 
-		if self.LogselectedTie >= 0 :
+		if self.LogselectedTie >= 0:
 			data = self.LogTieData[self.LogselectedTie]
-			for r in data :
+			for r in data:
 				x, y, n, f, startx, m, d, splicex, i, raw = r
 				depth = (pos[1] - self.startDepth) / (self.length / self.gap) + self.SPrulerStartDepth
 				newtag = (x, pos[1], n, f, startx, m, depth, self.splicerX, i, raw)
@@ -5525,12 +5487,12 @@ class DataCanvas(wxBufferedWindow):
 			self.LDselectedTie = self.LogselectedTie 
 			self.LogselectedTie = -1
 
-		if self.drag == 1 :
-			if pos[0] == self.mouseX and pos[1] == self.mouseY : 
-				if self.logTie != -1 :
+		if self.drag == 1:
+			if pos[0] == self.mouseX and pos[1] == self.mouseY: 
+				if self.logTie != -1:
 					logcount = self.parent.eldPanel.fileList.GetCount()
 					logcount = len(self.LogTieData) - (logcount * 2)
-					if self.parent.CheckAutoELD() == False :
+					if self.parent.CheckAutoELD() == False:
 						self.parent.OnShowMessage("Error", "Auto Correlation does not applied.", 1)
 						self.selectedCore = -1
 						self.spliceTie = -1
@@ -5544,10 +5506,10 @@ class DataCanvas(wxBufferedWindow):
 						self.UpdateDrawing()
 						return
 
-					if logcount < 2 : 
+					if logcount < 2: 
 						fixed = 0 
 						length = len(self.LogTieData) % 2
-						if length == 0 : 
+						if length == 0: 
 							fixed = 1 
 						# Tie 
 						l = []
@@ -5557,7 +5519,7 @@ class DataCanvas(wxBufferedWindow):
 						self.LogTieData.append(l) 
 
 						length = len(self.LogTieData) % 2
-						if length == 0 : 
+						if length == 0: 
 							length = len(self.LogTieData) 
 							self.activeSATie = length - 1
 							data = self.LogTieData[length - 2]
@@ -5567,7 +5529,7 @@ class DataCanvas(wxBufferedWindow):
 							x2 = 0
 							coreid = 0 
 							currentY = 0
-							for r in data :
+							for r in data:
 								currentY = r[1] 
 								y2 = (r[1] - self.startDepth) / (self.length / self.gap) + self.SPrulerStartDepth
 								x2 = r[0] 
@@ -5575,13 +5537,13 @@ class DataCanvas(wxBufferedWindow):
 								
 							data = self.LogTieData[length - 1]
 							n = 0
-							for r in data :
+							for r in data:
 								self.mouseY = r[1] 
 								y1 = (r[1] - self.startDepth) / (self.length / self.gap) + self.SPrulerStartDepth
 								x1 = r[0] 
 								n = r[2]
 
-							if x1 < x2 : 
+							if x1 < x2: 
 								temp = y1
 								y1 = y2
 								y2 = temp
@@ -5593,8 +5555,8 @@ class DataCanvas(wxBufferedWindow):
 							addedFlag = False 
 							maxsize = length - 2
 							for data in self.LogTieData:
-								for r in data :
-									if prePosY <= y2 and  y2 < r[6] :
+								for r in data:
+									if prePosY <= y2 and  y2 < r[6]:
 										addedFlag = True
 										# UPDATE ORDER 
 										data1 = self.LogTieData[length - 2]
@@ -5608,20 +5570,20 @@ class DataCanvas(wxBufferedWindow):
 										break
 									prePosY = r[6]
 								countIdx = countIdx + 1
-								if addedFlag == True :
+								if addedFlag == True:
 									length = countIdx
 									break
-								if countIdx >= maxsize :
+								if countIdx >= maxsize:
 									break
 
-							if addedFlag == False :
+							if addedFlag == False:
 								self.LDselectedTie = len(self.LogTieData) - 1 
 
 							coreInfo = self.findCoreInfoByIndex(coreid)
 							count = 0
-							if len(self.SpliceCore) == 1 :
+							if len(self.SpliceCore) == 1:
 								self.PreviewNumTies = 0
-								for i in range(self.parent.eldPanel.fileList.GetCount()) :
+								for i in range(self.parent.eldPanel.fileList.GetCount()):
 									start = 0
 									last = 0
 									data = self.parent.eldPanel.fileList.GetString(i)
@@ -5638,39 +5600,39 @@ class DataCanvas(wxBufferedWindow):
 
 							self.PreviewLog = [-1, -1, 1.0, 0, -1, -1, 1.0]
 							# HYEJUNG
-							if self.LDselectedTie == 1 :
+							if self.LDselectedTie == 1:
 								self.PreviewLog[3] = y1 - y2
 								y3 = 0
 								self.PreviewLog[2] = (y1 - y3) / (y2 - y3)
 								self.PreviewLog[0] = y3
 								self.PreviewLog[1] = y2
-								if (self.LDselectedTie + 2) < len(self.LogTieData) :
+								if (self.LDselectedTie + 2) < len(self.LogTieData):
 									data = self.LogTieData[self.LDselectedTie + 1]
-									for r in data :
+									for r in data:
 										y3 = r[6]
 								self.PreviewLog[4] = y2
 								self.PreviewLog[5] = y3
 								self.PreviewLog[6] = (y3 - y1) / (y3 - y2)
-							else :
+							else:
 								y3 = 0
 								data = self.LogTieData[length - 3]
-								for r in data :
+								for r in data:
 									y3 = r[6]
 								self.PreviewLog[2] = (y1 - y3) / (y2 - y3)
 								self.PreviewLog[0] = y3
 								self.PreviewLog[1] = y2
-								if (length + 1) < len(self.LogTieData) :
+								if (length + 1) < len(self.LogTieData):
 									data = self.LogTieData[length]
-									for r in data :
+									for r in data:
 										y3 = r[6]
 									self.PreviewLog[4] = y2
 									self.PreviewLog[5] = y3
 									self.PreviewLog[6] = (y3 - y1) / (y3 - y2)
 
 							flag = self.parent.showELDPanel | self.parent.showCompositePanel | self.parent.showSplicePanel
-							if coreInfo != None and flag == 1 :
+							if coreInfo != None and flag == 1:
 								testret = py_correlator.evalcoefLog(coreInfo.hole, int(coreInfo.holeCore), y2, y1)
-								if testret != "" :
+								if testret != "":
 									self.parent.OnAddFirstGraph(testret, y2, y1)
 									self.parent.OnUpdateGraph()
 
@@ -5684,18 +5646,18 @@ class DataCanvas(wxBufferedWindow):
 					else:
 						fixed = 0 
 						length = len(self.TieData) % 2
-						if length == 0 : 
+						if length == 0: 
 							fixed = 1 
-						if len(self.TieData) < 2 : 
+						if len(self.TieData) < 2: 
 							# Tie 
 							d = self.getDepth(pos[1])
 							newTie = CompositeTie(self.currentHole, self.selectedCore, self.currentStartX, pos[1], fixed, d)
 							self.TieData.append(newTie) 
 
 							# if we now have two ties, set up guide core
-							self.parent.compositePanel.OnButtonEnable(2, True)
-							length = len(self.TieData) % 2
-							if length == 0 : 
+							if len(self.TieData) == 1:
+								self.UpdateAffineTieCount(1)
+							else: # len(self.TieData) == 2
 								self.activeTie = 1
 								length = len(self.TieData) 
 								fixedTie = self.TieData[length - 2]
@@ -5712,46 +5674,38 @@ class DataCanvas(wxBufferedWindow):
 
 								ciA = self.findCoreInfoByIndex(self.guideCore)
 								ciB = self.findCoreInfoByIndex(movableTie.core)
-								if ciA != None and ciA.hole == ciB.hole:
-									# can't create composite tie on same hole, remove movable tie and notify user
-									del self.TieData[-1]
-									self.parent.OnShowMessage("Error", "Composite ties cannot be made in the same hole", 1)
-									return
+								if ciA is not None and ciA.hole == ciB.hole:
+									self.parent.OnShowMessage("Error", "Composite ties cannot be made in the same hole.", 1)
+									self.ClearCompositeTies()
 								elif not self.parent.affineManager.isLegalTie(ciB, ciA):
-									del self.TieData[-1]
 									self.parent.OnShowMessage("Error", "Core {}{} is upstream in the tie chain.".format(ciB.hole, ciB.holeCore), 1)
-									return
-								else :
+									self.ClearCompositeTies()
+								else:
 									self.activeCore = self.selectedCore
 									self.OnUpdateGuideData(self.selectedCore, shiftx, shift)
 									self.parent.OnUpdateDepth(shift)
 									self.parent.TieUpdateSend(ciA.leg, ciA.site, ciA.hole, int(ciA.holeCore), ciB.hole, int(ciB.holeCore), y1, shift)
-									self.parent.compositePanel.OnButtonEnable(0, True)
-									flag = self.parent.showELDPanel | self.parent.showCompositePanel | self.parent.showSplicePanel
-									# brg 2/22/2017: stifle evaluation graph for now - want to move
-									# to Python side but not a priority at the moment
-									if flag == 1:
-										testret = self.EvaluateCorrelation(ciA.type, ciA.hole, int(ciA.holeCore), y2, ciB.type, ciB.hole, int(ciB.holeCore), y1)
-										if testret != "" :
-											self.parent.OnAddFirstGraph(testret, y2, y1)
-										for data_item in self.range :
-											typeA = ciA.type
-											if data_item[0] == "Natural Gamma" and typeA == "NaturalGamma" :
-												typeA = "Natural Gamma"
-											elif data_item[0] == "NaturalGamma" and typeA == "Natural Gamma" :
-												typeA = "NaturalGamma"
-											if data_item[0] != typeA and data_item[0] != "splice" and data_item[0] != "log" :
-												testret = self.EvaluateCorrelation(data_item[0], ciA.hole, int(ciA.holeCore), y2, data_item[0], ciB.hole, int(ciB.holeCore), y1)
-												if testret != "" :
-													self.parent.OnAddGraph(testret, y2, y1)
- 
-										self.parent.OnUpdateGraph()
+									testret = self.EvaluateCorrelation(ciA.type, ciA.hole, int(ciA.holeCore), y2, ciB.type, ciB.hole, int(ciB.holeCore), y1)
+									if testret != "":
+										self.parent.OnAddFirstGraph(testret, y2, y1)
+									for data_item in self.range:
+										typeA = ciA.type
+										if data_item[0] == "Natural Gamma" and typeA == "NaturalGamma":
+											typeA = "Natural Gamma"
+										elif data_item[0] == "NaturalGamma" and typeA == "Natural Gamma":
+											typeA = "NaturalGamma"
+										if data_item[0] != typeA and data_item[0] != "splice" and data_item[0] != "log":
+											testret = self.EvaluateCorrelation(data_item[0], ciA.hole, int(ciA.holeCore), y2, data_item[0], ciB.hole, int(ciB.holeCore), y1)
+											if testret != "":
+												self.parent.OnAddGraph(testret, y2, y1)
+									self.parent.OnUpdateGraph()
+									self.UpdateAffineTieCount(len(self.TieData))
 
 				elif len(self.LogTieData) == 0: # create splice tie
-					if (len(self.RealSpliceTie) == 0 and len(self.SpliceTieData) < 2) or(len(self.RealSpliceTie) >= 2 and len(self.SpliceTieData) < 4) :
+					if (len(self.RealSpliceTie) == 0 and len(self.SpliceTieData) < 2) or(len(self.RealSpliceTie) >= 2 and len(self.SpliceTieData) < 4):
 						fixed = 0 
 						length = len(self.SpliceTieData) % 2
-						if length == 0 : 
+						if length == 0: 
 							fixed = 1 
 
 						depth = (pos[1] - self.startDepth) / (self.length / self.gap) + self.SPrulerStartDepth
@@ -5760,7 +5714,7 @@ class DataCanvas(wxBufferedWindow):
 												  self.minData, depth, -1, self.Constrained)
 							self.SPSelectedCore = -1
 							self.selectedCore = -1
-						else :
+						else:
 							spliceTie = SpliceTie(self.currentStartX, pos[1], self.selectedCore, fixed,
 												  self.minData, depth, -1, self.Constrained)
 
@@ -5778,7 +5732,7 @@ class DataCanvas(wxBufferedWindow):
 							self.SpliceTieData.append(spliceTie)
 							length = 0
 
-						if length == 0 :
+						if length == 0:
 							self.activeSPTie = len(self.SpliceTieData) - 1
 							shift = 0.0
 
@@ -5809,20 +5763,20 @@ class DataCanvas(wxBufferedWindow):
 								if flag == 1:
 									testret = py_correlator.evalcoef_splice(ciB.type, ciB.hole, int(ciB.holeCore), 
 																			curSpliceTie.depth, prevSpliceTie.depth)
-									if testret != "" :
-										if self.Constrained == 0 :
+									if testret != "":
+										if self.Constrained == 0:
 											self.parent.splicePanel.OnUpdateDepth(shift)
 										self.parent.OnAddFirstGraph(testret, prevSpliceTie.depth, curSpliceTie.depth)
 
 									for data_item in self.range:
 										typeA = ciA.type
-										if data_item[0] == "Natural Gamma" and typeA == "NaturalGamma" :
+										if data_item[0] == "Natural Gamma" and typeA == "NaturalGamma":
 											typeA = "Natural Gamma"
-										elif data_item[0] == "NaturalGamma" and typeA == "Natural Gamma" :
+										elif data_item[0] == "NaturalGamma" and typeA == "Natural Gamma":
 											typeA = "NaturalGamma"
-										if data_item[0] != typeA and data_item[0] != "splice" and data_item[0] != "log" :
+										if data_item[0] != typeA and data_item[0] != "splice" and data_item[0] != "log":
 											testret = py_correlator.evalcoef_splice(data_item[0], ciB.hole, int(ciB.holeCore), curSpliceTie.depth, prevSpliceTie.depth)
-											if testret != "" :
+											if testret != "":
 												self.parent.OnAddGraph(testret, prevSpliceTie.depth, curSpliceTie.depth)
 									self.parent.OnUpdateGraph()
 
@@ -5843,9 +5797,9 @@ class DataCanvas(wxBufferedWindow):
 		scroll_start = self.startDepth * 0.7
 		scroll_y = mousePos[1] - scroll_start
 		scroll_width = self.Height - (self.startDepth * 1.6)
-		if scroll_y < scroll_start :		 
+		if scroll_y < scroll_start:		 
 			scroll_y = scroll_start
-		if scroll_y > scroll_width :
+		if scroll_y > scroll_width:
 			scroll_y = scroll_width
 
 		for key, data in self.DrawData.items():
@@ -5859,24 +5813,27 @@ class DataCanvas(wxBufferedWindow):
 
 		scroll_width = scroll_width - scroll_start
 		rate = (scroll_y - scroll_start) / (scroll_width * 1.0)
-		if self.MainViewMode == True :
+		if self.MainViewMode == True:
 			self.rulerStartDepth = int( self.parent.ScrollMax * rate * 100.0 ) / 100.0
-			if self.parent.client != None :
+			if self.parent.client != None:
 				_depth = (self.rulerStartDepth + self.rulerEndDepth) / 2.0
 				self.parent.client.send("jump_to_depth\t" + str(_depth) + "\n")
-		else :
+		else:
 			tempDepth = int(self.parent.ScrollMax * rate) / 10
 			self.rulerStartAgeDepth = tempDepth * 10
 			self.SPrulerStartAgeDepth = tempDepth * 10
 
-		if self.isSecondScroll == 0 : 
+		if not self.independentScroll or self.spliceWindowOn == 0:
+			# 3/10/2019 TODO? "Interface" seems to be redundant, we never actually draw
+			# its bitmap (search on dc.DrawBitmap()) as we do for "Skin". Leaving for
+			# now since it's harmless.
 			bmp, x, y = self.DrawData["Interface"]
 			self.DrawData["Interface"] = (bmp, x, scroll_y)
 
 			bmp, x, y = self.DrawData["Skin"]
 			self.DrawData["Skin"] = (bmp, x, scroll_y)
 
-			if self.MainViewMode == True :
+			if self.MainViewMode == True:
 				self.SPrulerStartDepth = int(self.parent.ScrollMax * rate * 100.0) / 100.0
 
 	def OnUpdateTie(self, tieType):
@@ -5906,30 +5863,30 @@ class DataCanvas(wxBufferedWindow):
 		ciA = self.findCoreInfoByIndex(n1)
 		ciB = self.findCoreInfoByIndex(n2)
 
-		if tieType == 1 : # composite
+		if tieType == 1: # composite
 			shift = y2 - y1
 			self.parent.TieUpdateSend(ciA.leg, ciA.site, ciA.hole, int(ciA.holeCore), ciB.hole, int(ciB.holeCore), y1, shift)
 
 		flag = self.parent.showELDPanel | self.parent.showCompositePanel | self.parent.showSplicePanel
 		if ciA != None and ciB != None and flag == 1:
-			if tieType == 1 : # composite
+			if tieType == 1: # composite
 				testret = self.EvaluateCorrelation(ciA.type, ciA.hole, int(ciA.holeCore), y2, ciB.type, ciB.hole, int(ciB.holeCore), y1)
-			else :
+			else:
 				testret = py_correlator.evalcoef_splice(ciB.type, ciB.hole, int(ciB.holeCore), y1, y2)
-			if testret != "" :
+			if testret != "":
 				self.parent.OnAddFirstGraph(testret, y2, y1)
-			for data_item in self.range :
+			for data_item in self.range:
 				typeA = ciA.type
-				if data_item[0] == "Natural Gamma" and typeA == "NaturalGamma" :
+				if data_item[0] == "Natural Gamma" and typeA == "NaturalGamma":
 					typeA = "Natural Gamma"
-				elif data_item[0] == "NaturalGamma" and typeA == "Natural Gamma" :
+				elif data_item[0] == "NaturalGamma" and typeA == "Natural Gamma":
 					typeA = "NaturalGamma"
-				if data_item[0] != typeA and data_item[0] != "splice" and data_item[0] != "log" :
-					if tieType == 1 : # composite
+				if data_item[0] != typeA and data_item[0] != "splice" and data_item[0] != "log":
+					if tieType == 1: # composite
 						testret = self.EvaluateCorrelation(data_item[0], ciA.hole, int(ciA.holeCore), y2, data_item[0], ciB.hole, int(ciB.holeCore), y1)
-					else :
+					else:
 						testret = py_correlator.evalcoef_splice(data_item[0], ciB.hole, int(ciB.holeCore), y1, y2)
-					if testret != "" :
+					if testret != "":
 						self.parent.OnAddGraph(testret, y2, y1)
 			self.parent.OnUpdateGraph()
 
@@ -5938,18 +5895,18 @@ class DataCanvas(wxBufferedWindow):
 	def OnMotion(self, event):
 		pos = event.GetPositionTuple()
 
-		if self.grabScrollA == 1 :
+		if self.grabScrollA == 1:
 			self.UpdateScrollA(pos)
 			self.UpdateDrawing()
-			return ;
+			return 
 
-		if self.grabScrollB == 1 :
+		if self.grabScrollB == 1:
 			scroll_start = self.startDepth * 0.7
 			scroll_y = pos[1] - scroll_start
-			if scroll_y < scroll_start :
+			if scroll_y < scroll_start:
 				scroll_y = scroll_start
 			scroll_width = self.Height - (self.startDepth * 1.6)
-			if scroll_y > scroll_width :
+			if scroll_y > scroll_width:
 				scroll_y = scroll_width
 
 			bmp, x, y = self.DrawData["Interface"]
@@ -5960,18 +5917,18 @@ class DataCanvas(wxBufferedWindow):
 
 			scroll_width = scroll_width - scroll_start
 			rate = (scroll_y - scroll_start) / (scroll_width * 1.0)
-			if self.MainViewMode == True :
+			if self.MainViewMode == True:
 				self.SPrulerStartDepth = int(self.parent.ScrollMax * rate * 100.0) / 100.0
 			self.UpdateDrawing()
-			return ;
+			return 
 
-		if self.grabScrollC == 1 :
+		if self.grabScrollC == 1:
 			scroll_start = self.compositeX
 			scroll_x = pos[0] 
-			if scroll_x < scroll_start :
+			if scroll_x < scroll_start:
 				scroll_x = scroll_start
 			scroll_width = self.splicerX - (self.startDepth * 2.3) 
-			if scroll_x > scroll_width :
+			if scroll_x > scroll_width:
 				scroll_x = scroll_width
 
 			bmp, x, y = self.DrawData["HScroll"]
@@ -5979,29 +5936,29 @@ class DataCanvas(wxBufferedWindow):
 
 			scroll_width = scroll_width - scroll_start
 			rate = (scroll_x - scroll_start) / (scroll_width * 1.0)
-			if self.MainViewMode == True :
+			if self.MainViewMode == True:
 				self.minScrollRange = int(self.parent.HScrollMax * rate)
-			else :
+			else:
 				#self.minAgeRange = 3 * rate
 				self.minAgeRange = self.maxAgeRange * rate
 
 			self.UpdateDrawing()
-			return ;
+			return 
 
-		if self.MainViewMode == True :
+		if self.MainViewMode == True:
 			self.OnMainMotion(event)
-		else :
+		else:
 			self.OnAgeDepthMotion(event)
 
 	def OnAgeDepthMotion(self, event):
 		pos = event.GetPositionTuple()
 		got = 0
 
-		if self.AgeEnableDrag == True and self.SelectedAge >= 0 :
+		if self.AgeEnableDrag == True and self.SelectedAge >= 0:
 			got = 0
-		else : 
-			for data in self.DrawData["CoreArea"] :
-				for r in data :
+		else: 
+			for data in self.DrawData["CoreArea"]:
+				for r in data:
 					n, x, y, w, h, min, max, hole_idx = r
 					reg = wx.Rect(x, y, w, h)
 					if reg.Inside(wx.Point(pos[0], pos[1])):
@@ -6011,7 +5968,7 @@ class DataCanvas(wxBufferedWindow):
 			self.SelectedAge = -1
 			self.UpdateDrawing()
 
-		if self.selectScroll == 1 and self.grabScrollA == 0 and self.grabScrollC == 0 :
+		if self.selectScroll == 1 and self.grabScrollA == 0 and self.grabScrollC == 0:
 			if pos[0] >= 180 and pos[0] <= (self.Width - 100):
 				scroll_widthA = self.splicerX - (self.startDepth * 2.3) - self.compositeX
 				scroll_widthB = self.Width - (self.startDepth * 1.6) - self.splicerX
@@ -6057,9 +6014,9 @@ class DataCanvas(wxBufferedWindow):
 					return
 			
 			self.parent.OnUpdateGraph()
-	
+
 	def OnMainMotion(self, event):
-		if self.showMenu == True :
+		if self.showMenu == True:
 			return
 
 		pos = event.GetPositionTuple()
@@ -6071,10 +6028,10 @@ class DataCanvas(wxBufferedWindow):
 		if self.MousePos[0] > self.Width:
 			return
 
-		#if self.drag == 0 : 
+		#if self.drag == 0: 
 		for key, data in self.DrawData.items():
 			if key == "CoreArea":
-				for s in data :
+				for s in data:
 					area = s 
 					for r in area:
 						n, x, y, w, h, min, max, hole_idx = r
@@ -6086,7 +6043,6 @@ class DataCanvas(wxBufferedWindow):
 
 							l.append((n, pos[0], pos[1], x, 1))
 							self.DrawData["MouseInfo"] = l
-							self.DrawData["HighlightCore"] = (x, y, w, h)
 			elif key == "SpliceArea" and self.MousePos[0] > self.splicerX:
 				ydepth = self.getSpliceDepth(pos[1])
 				interval = self.parent.spliceManager.getIntervalAtDepth(ydepth)
@@ -6098,7 +6054,7 @@ class DataCanvas(wxBufferedWindow):
 					self.DrawData["MouseInfo"] = [miTuple]
 					got = 1 # must set or DrawData["MouseInfo"] will be cleared
 
-		if self.drag == 1 :
+		if self.drag == 1:
 			got = 1 
 			
 		# adjust SpliceIntervalTie's depth if one is selected
@@ -6111,7 +6067,7 @@ class DataCanvas(wxBufferedWindow):
 			return
 
 		# adjust affine tie
-		if self.selectedTie >= 0 :
+		if self.selectedTie >= 0:
 			movableTie = self.TieData[self.selectedTie]
 			if self.selectedCore != movableTie.core:
 				return
@@ -6124,7 +6080,7 @@ class DataCanvas(wxBufferedWindow):
 			ciA = self.findCoreInfoByIndex(movableTie.core)
 			ciB = self.findCoreInfoByIndex(fixedTie.core)
 
-			if self.parent.showCompositePanel == 0 :
+			if self.parent.showCompositePanel == 0:
 				data = self.TieData[self.selectedTie]
 				data.screenY = pos[1]
 				data.depth = y1
@@ -6133,26 +6089,25 @@ class DataCanvas(wxBufferedWindow):
 			self.parent.TieUpdateSend(ciA.leg, ciA.site, ciB.hole, int(ciB.holeCore), ciA.hole, int(ciA.holeCore), y1, shift)
 
 			flag = self.parent.showELDPanel | self.parent.showCompositePanel | self.parent.showSplicePanel
-			# brg 2/22/2017: stifle evaluation graph for now - want to move
-			# to Python side but not a priority at the moment
- 			if ciA.hole != None and ciB.hole != None and flag == 1:
+			if ciA.hole != None and ciB.hole != None and flag == 1:
 				testret = self.EvaluateCorrelation(ciB.type, ciB.hole, int(ciB.holeCore), y2, ciA.type, ciA.hole, int(ciA.holeCore), y1)
-				if testret != "" :
+				if testret != "":
 					data = self.TieData[self.selectedTie]
 					data.screenY = pos[1]
 					data.depth = y1
 					self.parent.OnUpdateDepth(shift)
 					self.parent.OnAddFirstGraph(testret, y2, y1)
- 
-				for data_item in self.range :
+
+				# update evaluation plot for datatypes other than the type being shifted
+				for data_item in self.range:
 					typeA = ciA.type
-					if data_item[0] == "Natural Gamma" and typeA == "NaturalGamma" :
+					if data_item[0] == "Natural Gamma" and typeA == "NaturalGamma":
 						typeA = "Natural Gamma"
-					elif data_item[0] == "NaturalGamma" and typeA == "Natural Gamma" :
+					elif data_item[0] == "NaturalGamma" and typeA == "Natural Gamma":
 						typeA = "NaturalGamma"
-					if data_item[0] != typeA and data_item[0] != "splice" and data_item[0] != "log" :
+					if data_item[0] != typeA and data_item[0] != "splice" and data_item[0] != "log":
 						testret = self.EvaluateCorrelation(data_item[0], ciB.hole, int(ciB.holeCore), y2, data_item[0], ciA.hole, int(ciA.holeCore), y1)
-						if testret != "" :
+						if testret != "":
 							self.parent.OnAddGraph(testret, y2, y1)
 				self.parent.OnUpdateGraph()
 
@@ -6163,7 +6118,7 @@ class DataCanvas(wxBufferedWindow):
 			got = 1
 
 		# adjust splice tie - predates Splice Intervals, should be able to discard
-		if self.SPselectedTie >= 0 :
+		if self.SPselectedTie >= 0:
 			spliceTie = self.SpliceTieData[self.SPselectedTie]
 			depth = 0
 			shift = 0
@@ -6177,12 +6132,12 @@ class DataCanvas(wxBufferedWindow):
 			y1 = depth
 
 			prevSpliceTie = self.SpliceTieData[self.SPselectedTie - 1]
-			if self.Constrained == 1 :
+			if self.Constrained == 1:
 				prevSpliceTie.y = pos[1]
 				prevSpliceTie.depth = depth
 				y2 = y1
 
-			elif self.Constrained == 0 :
+			elif self.Constrained == 0:
 				shift = prevSpliceTie.depth - depth
 				depth = prevSpliceTie.depth
 				y2 = prevSpliceTie.depth
@@ -6196,34 +6151,34 @@ class DataCanvas(wxBufferedWindow):
 			flag = self.parent.showELDPanel | self.parent.showCompositePanel | self.parent.showSplicePanel
 			if ciA != None and ciB != None and flag == 1:
 				testret = py_correlator.evalcoef_splice(ciA.type, ciA.hole, int(ciA.holeCore), y1, y2)
-				if testret != "" :
-					if self.Constrained == 0 :
+				if testret != "":
+					if self.Constrained == 0:
 						shift = y2 - y1
 						self.parent.splicePanel.OnUpdateDepth(shift)
 					self.parent.OnAddFirstGraph(testret, y2, y1)
 
-				for data_item in self.range :
+				for data_item in self.range:
 					typeA = ciA.type
-					if data_item[0] == "Natural Gamma" and typeA == "NaturalGamma" :
+					if data_item[0] == "Natural Gamma" and typeA == "NaturalGamma":
 						typeA = "Natural Gamma"
-					elif data_item[0] == "NaturalGamma" and typeA == "Natural Gamma" :
+					elif data_item[0] == "NaturalGamma" and typeA == "Natural Gamma":
 						typeA = "NaturalGamma"
-					if data_item[0] != typeA and data_item[0] != "splice" and data_item[0] != "log" :
+					if data_item[0] != typeA and data_item[0] != "splice" and data_item[0] != "log":
 						testret = py_correlator.evalcoef_splice(data_item[0], ciA.hole, int(ciA.holeCore), y1, y2)
-						if testret != "" :
+						if testret != "":
 							self.parent.OnAddGraph(testret, y2, y1)
 				self.parent.OnUpdateGraph()
 
 			self.SPGuideCore = []
 			self.OnUpdateSPGuideData(self.selectedCore, depth, shift)
 
-		if self.LogselectedTie >= 0 :
+		if self.LogselectedTie >= 0:
 			logtieNo = self.LogselectedTie
-			if (self.LogselectedTie % 2) == 0 : 
+			if (self.LogselectedTie % 2) == 0: 
 				logtieNo = self.LogselectedTie + 1 
 
 			logtieSize = len(self.LogTieData) - 1
-			if logtieNo <= logtieSize :
+			if logtieNo <= logtieSize:
 				data = self.LogTieData[logtieNo]
 				depth = 0
 				shift = 0
@@ -6231,7 +6186,7 @@ class DataCanvas(wxBufferedWindow):
 				y2 = 0
 				x1 = 0
 				x2 = 0
-				for r in data :
+				for r in data:
 					x, y, n, f, startx, m, d, splicex, i, raw = r
 					depth = (pos[1] - self.startDepth) / (self.length / self.gap) + self.SPrulerStartDepth
 					newtag = (x, pos[1], n, f, startx, m, depth, self.splicerX, i, depth)
@@ -6245,7 +6200,7 @@ class DataCanvas(wxBufferedWindow):
 				y2 = 0
 				n = -1 
 				tieNo = -1
-				for prer in predata :
+				for prer in predata:
 					x, y, n, f, startx, m, d, splicex, i, raw = prer
 					tieNo = i 
 					#y2 = (y - self.startDepth) / ( self.length / self.gap )+ self.SPrulerStartDepth
@@ -6254,7 +6209,7 @@ class DataCanvas(wxBufferedWindow):
 				shift = y2 - depth
 				depth = y2
 
-				if x1 < x2 :
+				if x1 < x2:
 					temp = y1
 					y1 = y2
 					y2 = temp
@@ -6267,16 +6222,16 @@ class DataCanvas(wxBufferedWindow):
 				coreInfo = self.findCoreInfoByIndex(n)
 
 				self.PreviewLog = [-1, -1, 1.0, 0, -1, -1, 1.0]
-				if logtieNo == 1 :
+				if logtieNo == 1:
 					self.PreviewLog[3] = y1 - y2
 					y3 = 0
 					self.PreviewLog[2] = (y1 - y3) / (y2 - y3)
 					self.PreviewLog[0] = y3
 					self.PreviewLog[1] = y2
 
-					if (logtieNo + 2) < len(self.LogTieData) :
+					if (logtieNo + 2) < len(self.LogTieData):
 						data = self.LogTieData[logtieNo + 1]
-						for r in data :
+						for r in data:
 							y3 = r[6]
 
 						self.PreviewLog[4] = y2
@@ -6284,31 +6239,31 @@ class DataCanvas(wxBufferedWindow):
 						self.PreviewLog[6] = (y3 - y1) / (y3 - y2)
 				elif len(self.LogTieData) == 2 or self.PreviewNumTies == 0 or self.PreviewFirstNo == logtieNo:
 					self.PreviewLog[3] = y1 - y2
-					if self.Floating == False :
+					if self.Floating == False:
 						self.PreviewLog[0] = self.FirstDepth
 						self.PreviewLog[1] = y2
 						self.PreviewLog[2] = (y1 - self.FirstDepth) / (y2 - self.FirstDepth)
 
-						if (logtieNo + 2) < len(self.LogTieData) :
+						if (logtieNo + 2) < len(self.LogTieData):
 							data = self.LogTieData[logtieNo + 1]
-							for r in data :
+							for r in data:
 								y3 = r[6]
 
 							self.PreviewLog[4] = y2
 							self.PreviewLog[5] = y3
 							self.PreviewLog[6] = (y3 - y1) / (y3 - y2)
-				else :
+				else:
 					y3 = 0
 					data = self.LogTieData[logtieNo - 2]
-					for r in data :
+					for r in data:
 						y3 = r[6]
 					self.PreviewLog[2] = (y1 - y3) / (y2 - y3)
 					self.PreviewLog[0] = y3
 					self.PreviewLog[1] = y2
 
-					if (logtieNo + 2) < len(self.LogTieData) :
+					if (logtieNo + 2) < len(self.LogTieData):
 						data = self.LogTieData[logtieNo + 1]
-						for r in data :
+						for r in data:
 							y3 = r[6]
 
 						self.PreviewLog[4] = y2
@@ -6316,15 +6271,15 @@ class DataCanvas(wxBufferedWindow):
 						self.PreviewLog[6] = (y3 - y1) / (y3 - y2)
 
 				flag = self.parent.showELDPanel | self.parent.showCompositePanel | self.parent.showSplicePanel
-				if coreInfo != None and flag == 1 :
+				if coreInfo != None and flag == 1:
 					testret = py_correlator.evalcoefLog(coreInfo.hole, int(coreInfo.holeCore), y2, y1)
-					if testret != "" :
+					if testret != "":
 						self.parent.OnAddFirstGraph(testret, y2, y1)
 						self.parent.OnUpdateGraph()
 				got = 1
 
 
-		if self.selectScroll == 1 and self.grabScrollA == 0 and self.grabScrollC == 0 :
+		if self.selectScroll == 1 and self.grabScrollA == 0 and self.grabScrollC == 0:
 			if pos[0] >= 180 and pos[0] <= (self.Width - 100):
 				scroll_widthA = self.splicerX - (self.startDepth * 2.3) - self.compositeX 
 				scroll_widthB = self.Width - (self.startDepth * 1.6) - self.splicerX 
@@ -6350,7 +6305,6 @@ class DataCanvas(wxBufferedWindow):
 
 		if got == 0:
 			self.DrawData["MouseInfo"] = []
-			self.DrawData.pop("HighlightCore", None) # remove key/value pair entirely
 			self.selectedCore = -1 
 
 		self.UpdateDrawing()

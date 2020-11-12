@@ -5,12 +5,14 @@
 import platform
 platform_name = platform.uname()
 
-import wx 
+import wx
+import wx.grid
 import wx.lib.sheet as sheet
 from wx.lib import plot
 import random, sys, os, re, time, ConfigParser, string
 import numpy
 
+import smooth
 from importManager import py_correlator
 
 class CoreSheet(sheet.CSheet):
@@ -19,6 +21,7 @@ class CoreSheet(sheet.CSheet):
 	 	self.SetWindowStyle(wx.ALWAYS_SHOW_SB)
 		self.SetNumberRows(x)
 		self.SetNumberCols(y)
+		self.EnableEditing(False)
 
 class HoldDialog(wx.Frame):
 	def __init__(self, parent):
@@ -29,7 +32,7 @@ class HoldDialog(wx.Frame):
 		#self.EndModal(wx.ID_OK)
 
 
-def MessageDialog(parent, title, msg, nobutton):
+def MessageDialog(parent, title, msg, nobutton, makeNoDefault=False):
 	style = 0
 	if title == "Error":
 		style = wx.ICON_ERROR
@@ -38,6 +41,8 @@ def MessageDialog(parent, title, msg, nobutton):
 
 	if nobutton == 0:
 		style = style | wx.YES_NO
+		if makeNoDefault:
+			style = style | wx.NO_DEFAULT
 	elif nobutton == 1:
 		style = style | wx.OK
 	elif nobutton == 2:
@@ -47,32 +52,32 @@ def MessageDialog(parent, title, msg, nobutton):
 
 class MessageDialogOLD(wx.Dialog):
 	def __init__(self, parent, title, msg, nobutton):
-		if title == "About" or title == "Help" : 
+		if title == "About" or title == "Help": 
 			wx.Dialog.__init__(self, parent, -1, title, size=(330, 130), style= wx.STAY_ON_TOP)
-		else :
+		else:
 			wx.Dialog.__init__(self, parent, -1, title, size=(330, 110), style= wx.STAY_ON_TOP)
 
 		self.Center()
 		vbox_top = wx.BoxSizer(wx.VERTICAL)
 		panel1 = wx.Panel(self, -1, style = wx.WANTS_CHARS)
 		sizer = wx.FlexGridSizer(1, 2)
-		if title == "Error" : 
+		if title == "Error": 
 			bmp = wx.StaticBitmap(panel1, -1, wx.Bitmap('icons/ErrorCircle-32x32.png'))
 			sizer.Add(bmp, 0, wx.LEFT | wx.TOP, 9)
-		elif title == "Information" or title == "Help" :
+		elif title == "Information" or title == "Help":
 			bmp = wx.StaticBitmap(panel1, -1, wx.Bitmap('icons/about-32x32.png'))
 			sizer.Add(bmp, 0, wx.LEFT | wx.TOP, 9)
-		elif title == "About" :
+		elif title == "About":
 			bmp = wx.StaticBitmap(panel1, -1, wx.Bitmap('icons/help-32x32.png'))
 			sizer.Add(bmp, 0, wx.LEFT | wx.TOP, 9)
 		sizer.Add(wx.StaticText(panel1, -1, msg), 0, wx.LEFT | wx.TOP | wx.BOTTOM, 15)
 		panel1.SetSizer(sizer)
 		vbox_top.Add(panel1)
 
-		if nobutton == 1 :
+		if nobutton == 1:
 			okBtn = wx.Button(self, wx.ID_OK, "OK")
 			vbox_top.Add(okBtn, 0, wx.LEFT, 110)
-		else :
+		else:
 			grid = wx.GridSizer(1,2)
 			okBtn = wx.Button(self, wx.ID_OK, "OK")
 			grid.Add(okBtn)
@@ -87,7 +92,7 @@ class MessageDialogOLD(wx.Dialog):
 	# 9/17/2013 brg: Seems we only need to handle enter for Okay, escape
 	# is automatically handled by wx.Dialog
 	def OnCharUp(self,event):
-		if event.GetKeyCode() == wx.WXK_RETURN :
+		if event.GetKeyCode() == wx.WXK_RETURN:
 			self.EndModal(wx.ID_OK)
 		else:
 			event.Skip()
@@ -125,42 +130,109 @@ class Message3Button(wx.Dialog):
 
 	def OnCharUp(self,event):
 		keyid = event.GetKeyCode() 
-		if keyid == wx.WXK_RETURN :
+		if keyid == wx.WXK_RETURN:
 			self.EndModal(wx.ID_OK) 
-		elif keyid == wx.WXK_ESCAPE :
+		elif keyid == wx.WXK_ESCAPE:
 			self.EndModal(wx.ID_CANCEL) 
 
 
-class BoxDialog(wx.Dialog):
+# Dialog with a wx.Grid widget for viewing tabular data
+class ViewDataFileDialog(wx.Dialog):
+	def __init__(self, parent, title, dataframe):
+		if platform_name[0] == "Windows":
+			# Using wx.RESIZE_BORDER | wx.CLOSE_BOX resulted in odd titlebar-less window on Windows.
+			# This set of style options yields a typical window.
+			style = wx.DEFAULT_DIALOG_STYLE | wx.MINIMIZE_BOX | wx.MAXIMIZE_BOX | wx.RESIZE_BORDER
+		else:
+			style = wx.RESIZE_BORDER | wx.CLOSE_BOX
+		wx.Dialog.__init__(self, parent, -1, title, style=style)
+
+		self.dataframe = dataframe
+
+		# table
+		self.filePanel = wx.Panel(self, -1)
+		self.table = wx.grid.Grid(self.filePanel, -1)
+		self.table.DisableDragRowSize()
+
+		# close button
+		self.closeButton = wx.Button(self.filePanel, -1, "Close")
+		self.closeButton.SetDefault()
+		self.Bind(wx.EVT_BUTTON, self.OnClose, self.closeButton)
+
+		# layout
+		fpsizer = wx.BoxSizer(wx.VERTICAL)		
+		fpsizer.Add(self.table, 1, wx.EXPAND)
+		fpsizer.Add(self.closeButton, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+		self.filePanel.SetSizer(fpsizer)
+
+		self._populateTable()
+
+		# events
+		wx.EVT_CHAR_HOOK(self, self.OnKey)
+
+	def _populateTable(self):
+		self.table.CreateGrid(len(self.dataframe), len(self.dataframe.columns.tolist()))
+		self.table.EnableEditing(False)
+
+		# populate headers if any
+		for colidx, name in enumerate(self.dataframe.columns.tolist()):
+			if name is not None:
+				self.table.SetColLabelValue(colidx, name)
+
+		# populate cells
+		for ridx, row in enumerate(self.dataframe.itertuples()):
+			for cidx in range(0, len(row) - 1):
+				cellStr = str(row[cidx + 1])
+				if cellStr == "nan":
+					cellStr = ""
+				self.table.SetCellValue(ridx, cidx, cellStr) # skip leading index column
+
+		self.table.AutoSize() # resize columns to fit header+data...bogs things down with large files
+		tableWidth, tableHeight = self.table.GetSize()
+		# 3/20/2019 todo: revisit this and find a less fudgy solution!
+		# 50 is a fudge factor to account for the window's titlebar and Close button panel.
+		# Without it, window was too short to see contents of short files (<= 3 rows),
+		# forcing user to resize, which was silly.
+		self.SetClientSize((tableWidth, tableHeight + 50))
+
+	def OnClose(self, evt):
+		self.EndModal(wx.ID_OK)
+
+	def OnKey(self, evt):
+		if evt.GetKeyCode() == wx.WXK_ESCAPE:
+			self.EndModal(wx.ID_OK)
+
+
+class CustomDataTypeDialog(wx.Dialog):
 	def __init__(self, parent, title):
-		wx.Dialog.__init__(self, parent, -1, title, size=(300, 130), style= wx.STAY_ON_TOP)
+		wx.Dialog.__init__(self, parent, -1, title, style=wx.DEFAULT_DIALOG_STYLE)
 
 		self.Center()
-		vbox_top = wx.BoxSizer(wx.VERTICAL)
-		self.txt = wx.TextCtrl(self, -1, "", size = (270, 25), style=wx.SUNKEN_BORDER )
+		vbox = wx.BoxSizer(wx.VERTICAL)
+		self.txt = wx.TextCtrl(self, -1, "[new data type]", size=(250,-1))
 
-		vbox_top.Add(self.txt, 0, wx.LEFT | wx.TOP | wx.BOTTOM, 15)
+		vbox.Add(self.txt, 1, wx.LEFT | wx.RIGHT | wx.TOP | wx.EXPAND, 15)
 
-		#self.register = wx.CheckBox(self, -1, 'Register')
-		#vbox_top.Add(self.register, 0, wx.LEFT, 70)
+		self.register = wx.CheckBox(self, -1, 'Add Data Type to List')
+		vbox.Add(self.register, 0, wx.ALL, 10)
 
-		grid = wx.GridSizer(1,3)
-		self.register = wx.CheckBox(self, -1, 'Register')
-		grid.Add(self.register)
+		grid = wx.GridSizer(1,2)
+		# grid.Add(self.register)
 		okBtn = wx.Button(self, wx.ID_OK, "OK")
 		grid.Add(okBtn)
 		cancelBtn = wx.Button(self, wx.ID_CANCEL, "Cancel")
 		grid.Add(cancelBtn, 0, wx.LEFT, 10)
-		vbox_top.Add(grid, 0, wx.LEFT, 20)
-
-		self.SetSizer(vbox_top)
+		vbox.Add(grid, 0, wx.ALL | wx.ALIGN_CENTER, 10)
+		self.SetSizer(vbox)
+		self.Fit()
+		self.txt.SelectAll()
 		wx.EVT_KEY_UP(self, self.OnCharUp)
 
 	def OnCharUp(self,event):
 		keyid = event.GetKeyCode() 
-		if keyid == wx.WXK_RETURN :
+		if keyid == wx.WXK_RETURN:
 			self.EndModal(wx.ID_OK) 
-		elif keyid == wx.WXK_ESCAPE :
+		elif keyid == wx.WXK_ESCAPE:
 			self.EndModal(wx.ID_CANCEL) 
 
 class EditBoxDialog(wx.Dialog):
@@ -184,9 +256,9 @@ class EditBoxDialog(wx.Dialog):
 
 	def OnCharUp(self,event):
 		keyid = event.GetKeyCode() 
-		if keyid == wx.WXK_RETURN :
+		if keyid == wx.WXK_RETURN:
 			self.EndModal(wx.ID_OK) 
-		elif keyid == wx.WXK_ESCAPE :
+		elif keyid == wx.WXK_ESCAPE:
 			self.EndModal(wx.ID_CANCEL) 
 			
 	def getText(self):
@@ -216,9 +288,9 @@ class StratTypeDialog(wx.Dialog):
 
 	def OnCharUp(self,event):
 		keyid = event.GetKeyCode() 
-		if keyid == wx.WXK_RETURN :
+		if keyid == wx.WXK_RETURN:
 			self.EndModal(wx.ID_OK) 
-		elif keyid == wx.WXK_ESCAPE :
+		elif keyid == wx.WXK_ESCAPE:
 			self.EndModal(wx.ID_CANCEL) 
 
 
@@ -229,18 +301,18 @@ class ClearDataDialog(wx.Dialog):
 		self.parent = parent
 
 		vbox = wx.BoxSizer(wx.VERTICAL)
-		vbox.Add(wx.StaticText(self, -1, "Select Type to Clear :"), 0, wx.LEFT | wx.TOP, 9)
+		vbox.Add(wx.StaticText(self, -1, "Select Type to Clear:"), 0, wx.LEFT | wx.TOP, 9)
 		self.fileList = wx.ListBox(self, -1, (0,0), (265,250), "", style=wx.LB_HSCROLL|wx.LB_NEEDED_SB)	 
 		vbox.Add(self.fileList, 0, wx.LEFT | wx.TOP, 9)
 
 		n = list.GetCount()
 		types = ""
-		for i in range(n) :
+		for i in range(n):
 			types = list.GetString(i)
-			if types[0:3] == "All" :
+			if types[0:3] == "All":
 				self.fileList.Append(list.GetString(i))
 
-		if self.fileList.GetCount() > 0 :	
+		if self.fileList.GetCount() > 0:	
 			self.fileList.Select(0)
 		self.fileList.SetForegroundColour(wx.BLACK)
 
@@ -260,21 +332,21 @@ class ClearDataDialog(wx.Dialog):
 
 	def OnCharUp(self,event):
 		keyid = event.GetKeyCode() 
-		if keyid == wx.WXK_RETURN :
+		if keyid == wx.WXK_RETURN:
 			self.EndModal(wx.ID_OK) 
-		elif keyid == wx.WXK_ESCAPE :
+		elif keyid == wx.WXK_ESCAPE:
 			self.EndModal(wx.ID_CANCEL) 
 
 	def OnClearData(self, event):
 		ret = 0
 		size = self.fileList.GetCount()
-		for i in range(size) :
-			if self.fileList.IsSelected(i) == True :
-				if i == 0 : 
+		for i in range(size):
+			if self.fileList.IsSelected(i) == True:
+				if i == 0: 
 					self.parent.OnNewData(None)
-				elif i == 1 and size == 2 :
+				elif i == 1 and size == 2:
 					self.parent.OnNewData(None)
-				else :
+				else:
 					py_correlator.cleanDataType(self.fileList.GetString(i))
 					self.fileList.Delete(i)
 				break	
@@ -368,7 +440,7 @@ class AgeListDialog(wx.Dialog):
 		self.selectedNo =  -1 
 
 		idx = 0
-		for age in active_list :
+		for age in active_list:
 			self.ageList.InsertItems([str(age)], idx)
 			idx += 1
 
@@ -378,24 +450,66 @@ class AgeListDialog(wx.Dialog):
 
 	def OnCharUp(self,event):
 		keyid = event.GetKeyCode() 
-		if keyid == wx.WXK_RETURN :
+		if keyid == wx.WXK_RETURN:
 			self.EndModal(wx.ID_OK) 
-		elif keyid == wx.WXK_ESCAPE :
+		elif keyid == wx.WXK_ESCAPE:
 			self.EndModal(wx.ID_CANCEL) 
 
-	def OnSelect(self, event) :
-		for i in range(self.ageList.GetCount()) :
-			if self.ageList.IsSelected(i) == True :
+	def OnSelect(self, event):
+		for i in range(self.ageList.GetCount()):
+			if self.ageList.IsSelected(i) == True:
 				self.selectedNo = i 
 				return
 
+# Save dialog used in 3.0. Largely a duplicate of unused Message3Button
+# with a few modifications. Shameful, but time is short.
+class SaveDialog(wx.Dialog):
+	def __init__(self, parent, msg, enableUpdateExisting):
+		wx.Dialog.__init__(self, parent, -1, "About", style=wx.DEFAULT_DIALOG_STYLE)
 
+		self.Center()
+		vbox_top = wx.BoxSizer(wx.VERTICAL)
+		panel1 = wx.Panel(self, -1)
+		sizer = wx.FlexGridSizer(1, 2)
+		bmp = wx.StaticBitmap(panel1, -1, wx.Bitmap('icons/help-32x32.png'))
+		sizer.Add(bmp, 0, wx.LEFT | wx.TOP, 9)
+		sizer.Add(wx.StaticText(panel1, -1, msg), 0, wx.LEFT | wx.TOP | wx.BOTTOM, 15)
+		panel1.SetSizer(sizer)
+		vbox_top.Add(panel1)
+
+		grid = wx.BoxSizer(wx.HORIZONTAL)
+		okBtn = wx.Button(self, wx.ID_YES, "Create New")
+		self.Bind(wx.EVT_BUTTON, self.OnYES, okBtn)
+		grid.Add(okBtn, 1, wx.LEFT | wx.RIGHT, 5)
+		noBtn = wx.Button(self, wx.ID_OK, "Update Existing")
+		grid.Add(noBtn, 1, wx.LEFT | wx.RIGHT, 5)
+		noBtn.Enable(enableUpdateExisting)
+		cancelBtn = wx.Button(self, wx.ID_CANCEL, "Cancel")
+		grid.Add(cancelBtn, 1, wx.LEFT | wx.RIGHT, 5)
+		vbox_top.Add(grid, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+
+		self.SetSizer(vbox_top)
+		self.GetSizer().Fit(self)
+		wx.EVT_KEY_UP(self, self.OnCharUp)
+
+	def OnYES(self, event):
+		self.EndModal(wx.ID_YES)
+
+	def OnCharUp(self,event):
+		keyid = event.GetKeyCode() 
+		if keyid == wx.WXK_RETURN:
+			self.EndModal(wx.ID_OK) 
+		elif keyid == wx.WXK_ESCAPE:
+			self.EndModal(wx.ID_CANCEL) 
+
+
+# Unused.
 class SaveTableDialog(wx.Dialog):
 	def __init__(self, parent, id, affine, splice):
-		wx.Dialog.__init__(self, parent, id, "Save", size=(340, 340),style= wx.DEFAULT_DIALOG_STYLE |wx.NO_FULL_REPAINT_ON_RESIZE|wx.STAY_ON_TOP)
+		wx.Dialog.__init__(self, parent, id, "Save", size=(340, 180),style= wx.DEFAULT_DIALOG_STYLE |wx.NO_FULL_REPAINT_ON_RESIZE|wx.STAY_ON_TOP)
 
 		wx.StaticText(self, -1, 'Check to Save to Data Manager', (50, 10))
-		panel = wx.Panel ( self, -1, (10, 30), size=(320, 40), style=wx.BORDER)
+		panel = wx.Panel( self, -1, (10, 30), size=(320, 40), style=wx.BORDER)
 
 		self.affineCheck = wx.CheckBox(panel, -1, 'Affine Table', (10, 10))
 		self.affineCheck.SetValue(affine)
@@ -410,39 +524,40 @@ class SaveTableDialog(wx.Dialog):
 		self.spliceUpdate.SetValue(True)
 		wx.RadioButton(panel1, -1, "Create New", (190, 10))
 
-		panel2 = wx.Panel ( self, -1, (10, 120), size=(320, 40), style=wx.BORDER)
-		self.eldCheck = wx.CheckBox(panel2, -1, 'ELD Table', (10, 10))
-		self.eldUpdate = wx.RadioButton(panel2, -1, "Update", (120, 10), style=wx.RB_GROUP)
-		self.eldUpdate.SetValue(True)
-		wx.RadioButton(panel2, -1, "Create New", (190, 10))
+		# panel2 = wx.Panel ( self, -1, (10, 120), size=(320, 40), style=wx.BORDER)
+		# self.eldCheck = wx.CheckBox(panel2, -1, 'ELD Table', (10, 10))
+		# self.eldUpdate = wx.RadioButton(panel2, -1, "Update", (120, 10), style=wx.RB_GROUP)
+		# self.eldUpdate.SetValue(True)
+		# wx.RadioButton(panel2, -1, "Create New", (190, 10))
 
-		panel3 = wx.Panel ( self, -1, (10, 165), size=(320, 40), style=wx.BORDER)
-		self.ageCheck = wx.CheckBox(panel3, -1, 'Age/Depth', (10, 10))
-		self.ageUpdate = wx.RadioButton(panel3, -1, "Update", (120, 10), style=wx.RB_GROUP)
-		self.ageUpdate.SetValue(True)
-		wx.RadioButton(panel3, -1, "Create New", (190, 10))
+		# panel3 = wx.Panel ( self, -1, (10, 165), size=(320, 40), style=wx.BORDER)
+		# self.ageCheck = wx.CheckBox(panel3, -1, 'Age/Depth', (10, 10))
+		# self.ageUpdate = wx.RadioButton(panel3, -1, "Update", (120, 10), style=wx.RB_GROUP)
+		# self.ageUpdate.SetValue(True)
+		# wx.RadioButton(panel3, -1, "Create New", (190, 10))
 
-		panel4 = wx.Panel ( self, -1, (10, 210), size=(320, 40), style=wx.BORDER)
-		self.seriesCheck = wx.CheckBox(panel4, -1, 'Age Model', (10, 10))
-		self.seriesUpdate = wx.RadioButton(panel4, -1, "Update", (120, 10), style=wx.RB_GROUP)
-		self.seriesUpdate.SetValue(True)
-		wx.RadioButton(panel4, -1, "Create New", (190, 10))
+		# panel4 = wx.Panel ( self, -1, (10, 210), size=(320, 40), style=wx.BORDER)
+		# self.seriesCheck = wx.CheckBox(panel4, -1, 'Age Model', (10, 10))
+		# self.seriesUpdate = wx.RadioButton(panel4, -1, "Update", (120, 10), style=wx.RB_GROUP)
+		# self.seriesUpdate.SetValue(True)
+		# wx.RadioButton(panel4, -1, "Create New", (190, 10))
 
-		wx.Button(self, wx.ID_OK, "Save", ((85, 265)))
-		wx.Button(self, wx.ID_CANCEL, "Cancel", ((180, 265)))
+		wx.Button(self, wx.ID_OK, "Save", ((85,120))) #((85, 265)))
+		wx.Button(self, wx.ID_CANCEL, "Cancel", ((180,120))) #((180, 265)))
 		wx.EVT_KEY_UP(self, self.OnCharUp)
 
 	def OnCharUp(self,event):
 		keyid = event.GetKeyCode() 
-		if keyid == wx.WXK_RETURN :
+		if keyid == wx.WXK_RETURN:
 			self.EndModal(wx.ID_OK) 
-		elif keyid == wx.WXK_ESCAPE :
+		elif keyid == wx.WXK_ESCAPE:
 			self.EndModal(wx.ID_CANCEL) 
 
 class OkButtonPanel(wx.Panel):
 	def __init__(self, parent, okName="OK", cancelName="Cancel"):
 		wx.Panel.__init__(self, parent, -1)
 		self.ok = wx.Button(self, wx.ID_OK, okName)
+		self.ok.SetDefault()
 		self.cancel = wx.Button(self, wx.ID_CANCEL, cancelName)
 		sz = wx.BoxSizer(wx.HORIZONTAL)
 		sz.Add(self.cancel, 0, wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, 10)
@@ -598,44 +713,88 @@ class ExportELDDialog(wx.Dialog):
 			self.EndModal(wx.ID_OK)
 		else:
 			self.EndModal(wx.ID_CANCEL)
-	
-	
+
 
 class ExportCoreDialog(wx.Dialog):
-	def __init__(self, parent):
-		wx.Dialog.__init__(self, parent, -1, "Export Core Data", style= wx.DEFAULT_DIALOG_STYLE |wx.NO_FULL_REPAINT_ON_RESIZE)
+	# parent: parent window of dialog
+	# enableAffine: boolean indicating whether or not to enable "Apply Affine" checkbox
+	# enableSplice: boolean indicating whether or not to enable "Apply Splice" checkbox
+	# holes: list of strings indicating hole(s) to be exported e.g. ['A', 'B', 'C']
+	# siteName: string indicating export exp-site
+	# datatype: string inidcating export datatype
+	# spliceHoles: string combining all holes participating in enabled splice (if any) e.g. "ABD"
+	def __init__(self, parent, enableAffine, enableSplice, holes, siteName, datatype, spliceHoles):
+		wx.Dialog.__init__(self, parent, -1, "Export Core Data", style= wx.DEFAULT_DIALOG_STYLE | wx.NO_FULL_REPAINT_ON_RESIZE | wx.RESIZE_BORDER)
+		self.holes = holes
+		self.siteName = siteName
+		self.datatype = datatype
+		self.spliceHoles = spliceHoles
 
 		vbox = wx.BoxSizer(wx.VERTICAL)
-		vbox.Add(wx.StaticText(self, -1, 'Check to Export Core data'), 0, wx.TOP | wx.LEFT | wx.ALIGN_CENTER_VERTICAL, 12)
+		# vbox.Add(wx.StaticText(self, -1, 'Check to Export Core data'), 0, wx.TOP | wx.LEFT | wx.ALIGN_CENTER_VERTICAL, 12)
 
 		panel = wx.Panel(self, -1)
 		vbox_opt = wx.BoxSizer(wx.HORIZONTAL)
 
 		opt_panel = wx.Panel(panel, -1)
-		sizer = wx.StaticBoxSizer(wx.StaticBox(opt_panel, -1, 'Apply Options'), orient=wx.VERTICAL)
+		sizer = wx.StaticBoxSizer(wx.StaticBox(opt_panel, -1, 'Export Options'), orient=wx.VERTICAL)
 
 		self.cull = wx.CheckBox(opt_panel, -1, 'Apply Cull')
-		sizer.Add(self.cull, 1)
-		self.cull.SetValue(True)
+		# sizer.Add(self.cull, 1, wx.EXPAND)
+		self.cull.SetValue(False)
+		self.cull.Hide()
 
+		# 2/26/2019: Hide unused items rather than removing them entirely since
+		# the export process refers to them and I don't want to shake the jello further.
 		self.affine = wx.CheckBox(opt_panel, -1, 'Apply Affine')
+		self.affine.Show(True)
 		sizer.Add(self.affine, 1)
+		self.affine.Enable(enableAffine)
 		self.splice = wx.CheckBox(opt_panel, -1, 'Apply Splice')
-		sizer.Add(self.splice, 1)
-		opt_panel.Bind(wx.EVT_CHECKBOX, self.OnSPLICE, self.splice)
+		self.splice.Show(True)
+		sizer.Add(self.splice, 1, wx.BOTTOM, 5)
+		self.splice.Enable(enableSplice)
+		opt_panel.Bind(wx.EVT_CHECKBOX, self.OnSplice, self.splice)
+		opt_panel.Bind(wx.EVT_CHECKBOX, self.OnAffine, self.affine)
 
 		self.eld = wx.CheckBox(opt_panel, -1, 'Apply ELD')
-		sizer.Add(self.eld, 1)
+		self.eld.Show(False)
+		# sizer.Add(self.eld, 1)
 		opt_panel.Bind(wx.EVT_CHECKBOX, self.OnELD, self.eld)
 
 		self.age = wx.CheckBox(opt_panel, -1, 'Apply Age Model')
-		sizer.Add(self.age, 1)
+		self.age.Show(False)
+		# sizer.Add(self.age, 1)
 		#opt_panel.Bind(wx.EVT_CHECKBOX, self.OnAGE, self.age)
 
+		self.prefix = wx.TextCtrl(opt_panel, -1)
+		self.suffix = wx.TextCtrl(opt_panel, -1)
+		prefixSizer = wx.BoxSizer(wx.HORIZONTAL)
+		prefixSizer.Add(wx.StaticText(opt_panel, -1, "Output File Prefix:"), 0, wx.ALIGN_CENTER_VERTICAL)
+		prefixSizer.Add(self.prefix, 1, wx.EXPAND | wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+		self.Bind(wx.EVT_TEXT, self.UpdateOutputFiles, self.prefix)
+		sizer.Add(prefixSizer, 0, wx.EXPAND)
+		suffixSizer = wx.BoxSizer(wx.HORIZONTAL)
+		suffixSizer.Add(wx.StaticText(opt_panel, -1, "Output File Suffix:"), 0, wx.ALIGN_CENTER_VERTICAL)
+		suffixSizer.Add(self.suffix, 1, wx.EXPAND | wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+		self.Bind(wx.EVT_TEXT, self.UpdateOutputFiles, self.suffix)
+		sizer.Add(suffixSizer, 0, wx.EXPAND)
+
 		opt_panel.SetSizer(sizer)
-		vbox_opt.Add(opt_panel)
+		vbox_opt.Add(opt_panel, 1, wx.EXPAND)
 		panel.SetSizer(vbox_opt)
 		vbox.Add(panel, 0, wx.EXPAND | wx.ALL, 10)
+
+		# Output Files options
+		outputPanel = wx.Panel(self, -1)
+		outputSizer = wx.StaticBoxSizer(wx.StaticBox(outputPanel, -1, 'Output File Names'), orient=wx.VERTICAL)
+
+		self.fileTextControls = [wx.StaticText(outputPanel, -1, self._outputFileName(h)) for h in self.holes]
+		for ftc in self.fileTextControls:
+			outputSizer.Add(ftc)
+
+		outputPanel.SetSizer(outputSizer)
+		vbox.Add(outputPanel, 0, wx.EXPAND | wx.ALL, 10)
 
 		btnPanel = wx.Panel(self, -1)
 		okBtn = wx.Button(btnPanel, wx.ID_OK, "Export")
@@ -649,25 +808,68 @@ class ExportCoreDialog(wx.Dialog):
 		wx.EVT_KEY_UP(self, self.OnCharUp)
 		
 		self.SetSizer(vbox)
-		self.Fit()
+		self.Fit() # fit dialog to controls, otherwise lower half will be obscured
+		self.SetSize((500, -1)) # expand width only, to allow space for prefixes/suffixes
+
+	# Update list of output filenames to reflect current options
+	def UpdateOutputFiles(self, event):
+		if self.splice.GetValue():
+			spliceFile = self._outputFileName(self.spliceHoles)
+			self.fileTextControls[0].SetLabel(spliceFile)
+			for ftc in self.fileTextControls[1:]:
+				ftc.SetLabel("")
+		else:
+			for index, ftc in enumerate(self.fileTextControls):
+				ftc.SetLabel(self._outputFileName(self.holes[index]))
+
+	# Return list of output filenames based on current options
+	def GetOutputFiles(self):
+		return [ftc.GetLabel() for ftc in self.fileTextControls]
+
+	# Return filename of format
+	# [optional prefix]-site-hole(s)_datatype_[RAW/SHIFTED/SPLICED]-[optional suffix].csv
+	# hole: string indicating hole (or holes in the case of splice e.g. "ABD")
+	def _outputFileName(self, hole):
+		prefix = self.prefix.GetValue() + "-" if len(self.prefix.GetValue()) > 0 else ""
+		suffix = "-" + self.suffix.GetValue() if len(self.suffix.GetValue()) > 0 else ""
+		return "{}{}-{}_{}_{}{}.csv".format(prefix, self.siteName, hole, self.datatype, self._getExportType(), suffix)
+
+	# Return string corresponding to currently-applied affine and splice, if any
+	def _getExportType(self):
+		if not self.affine.GetValue() and not self.splice.GetValue():
+			exportType = "RAW"
+		elif self.affine.GetValue() and not self.splice.GetValue():
+			exportType = "SHIFTED"
+		else:
+			exportType = "SPLICED"
+		return exportType
 
 	def OnCharUp(self,event):
 		keyid = event.GetKeyCode() 
-		if keyid == wx.WXK_ESCAPE :
-			self.EndModal(wx.ID_CANCEL) 
+		if keyid == wx.WXK_ESCAPE:
+			self.EndModal(wx.ID_CANCEL)
 
-	def OnSPLICE(self, event) :
-		ret = self.splice.GetValue()
+	# Affine must be applied to apply splice. Uncheck splice box
+	# if affine box is unchecked to enforce this.
+	def OnAffine(self, event):
+		applyAffine = self.affine.GetValue()
+		if not applyAffine and self.splice.GetValue():
+			self.splice.SetValue(False)
+		self.UpdateOutputFiles(None)
 
-		self.affine.SetValue(ret)
+	# Affine must be applied to apply splice. Check affine box if needed
+	# when splice box is checked.
+	def OnSplice(self, event):
+		if self.splice.GetValue():
+			self.affine.SetValue(True)
+		self.UpdateOutputFiles(None)
 
-	def OnELD(self, event) :
+	def OnELD(self, event):
 		ret = self.eld.GetValue()
-
 		self.affine.SetValue(ret)
 		#self.splice.SetValue(ret)
 
-	def OnAGE(self, event) :
+	def OnAGE(self, event):
 		ret = self.age.GetValue()
 		self.affine.SetValue(ret)
 
@@ -692,17 +894,17 @@ class AltSpliceDialog(wx.Dialog):
 		parent.dataFrame.Update_PROPERTY_ITEM(parent.dataFrame.selectBackup)
 		property = parent.dataFrame.propertyIdx
 		totalcount = parent.dataFrame.tree.GetChildrenCount(property, False)
-		if totalcount > 0 :
+		if totalcount > 0:
 			child = parent.dataFrame.tree.GetFirstChild(property)
 			child_item = child[0]
-			if parent.dataFrame.tree.GetItemText(child_item, 1) == "SPLICE" :
+			if parent.dataFrame.tree.GetItemText(child_item, 1) == "SPLICE":
 				filename = parent.dataFrame.tree.GetItemText(child_item, 8)
 				self.splice.Append(filename)
-			for k in range(1, totalcount) :
+			for k in range(1, totalcount):
 				child_item = parent.dataFrame.tree.GetNextSibling(child_item)
-				if parent.dataFrame.tree.GetItemText(child_item, 1) == "SPLICE" :
+				if parent.dataFrame.tree.GetItemText(child_item, 1) == "SPLICE":
 					self.splice.Append(parent.dataFrame.tree.GetItemText(child_item, 8))
-		if self.splice.GetCount() > 0 :
+		if self.splice.GetCount() > 0:
 			self.splice.Select(0)
 
 		self.selectedType = "" 
@@ -714,10 +916,10 @@ class AltSpliceDialog(wx.Dialog):
 
 	def OnCharUp(self,event):
 		keyid = event.GetKeyCode() 
-		if keyid == wx.WXK_ESCAPE :
+		if keyid == wx.WXK_ESCAPE:
 			self.EndModal(wx.ID_CANCEL) 
 
-	def OnSELECT(self, event) :
+	def OnSELECT(self, event):
 		self.selectedSplice = self.splice.GetStringSelection()
 		self.selectedType = self.all.GetStringSelection() 
 		self.EndModal(wx.ID_OK) 
@@ -912,7 +1114,7 @@ class ColorTableDialog(wx.Dialog):
 		self.Bind(wx.EVT_BUTTON, self.OnApplyColor, applyBtn)
 		grid4.Add(applyBtn, 0)
 
-		cancelBtn = wx.Button(self, wx.ID_CANCEL, "Dismiss")
+		cancelBtn = wx.Button(self, wx.ID_CANCEL, "Close")
 		grid4.Add(cancelBtn, 0, wx.LEFT, 25)		
 
 		vbox_top.Add(grid4, 0, wx.ALL | wx.CENTER, 10)
@@ -924,7 +1126,7 @@ class ColorTableDialog(wx.Dialog):
 
 	def OnCharUp(self,event):
 		keyid = event.GetKeyCode() 
-		if keyid == wx.WXK_ESCAPE :
+		if keyid == wx.WXK_ESCAPE:
 			self.EndModal(wx.ID_CANCEL)
 
 	def _makeColorPicker(self, parent, cpid):
@@ -933,7 +1135,7 @@ class ColorTableDialog(wx.Dialog):
 		return wx.ColourPickerCtrl(parent, id=cpid, size=cpsize)
 	
 	def updateItem(self):
-		if self.initiated == 0 :
+		if self.initiated == 0:
 			self.colorPicker01.SetColour(self.parent.Window.colorDict['mbsf'])
 			self.colorPicker02.SetColour(self.parent.Window.colorDict['ccsfTie'])
 			self.colorPicker03.SetColour(self.parent.Window.colorDict['ccsfSet'])
@@ -965,10 +1167,10 @@ class ColorTableDialog(wx.Dialog):
 			self.holePicker08.SetColour(self.parent.Window.overlapcolorList[7])
 			self.holePicker09.SetColour(self.parent.Window.overlapcolorList[8])
 
-			for key in self.parent.Window.colorDictKeys :
+			for key in self.parent.Window.colorDictKeys:
 				self.colorList.append(self.parent.Window.colorDict[key])
 
-			for i in range(9) :
+			for i in range(9):
 				self.overlapcolorList.insert(i, self.parent.Window.overlapcolorList[i])
 			self.initiated = 1
 
@@ -978,39 +1180,39 @@ class ColorTableDialog(wx.Dialog):
 		#"ODP", "Corporate", "Maritime", "Earth", "Santa Fe", "Custom"
 		self.colorList = []
 		currentColorSet = self.colorSet.GetStringSelection()
-		if currentColorSet == "ODP" :
+		if currentColorSet == "ODP":
 			self.colorList = [ wx.Colour(255, 215, 0), wx.Colour(0, 139, 0), \
 			wx.Colour(0, 102, 255), wx.Colour(255, 153, 0), \
 			wx.Colour(127, 255, 212), wx.Colour(255, 246, 143), wx.Colour(30, 144, 255), \
 			wx.Colour(255, 0, 0), wx.Colour(155, 48, 255), wx.Colour(139, 0, 0), \
 			wx.Colour(0, 139, 0), wx.Colour(139, 0, 0), wx.Colour(173, 255, 47), \
 			wx.Colour(255, 255, 255), wx.Colour(255, 140, 0), wx.Colour(0, 245, 255), wx.Colour(0, 0, 0), wx.Colour(255, 255, 255), wx.Colour(30, 144, 255), wx.Colour(224, 255, 255)] 
-		elif currentColorSet == "Corporate" :
+		elif currentColorSet == "Corporate":
 			self.colorList = [ wx.Colour(34, 139, 34), wx.Colour(0, 0, 255), wx.Colour(0, 0, 255), wx.Colour(0, 0, 255), \
 			wx.Colour(0, 255, 255), wx.Colour(205, 133, 63), wx.Colour(139, 76, 57), \
 			wx.Colour(125, 38, 205), wx.Colour(105, 139, 105), wx.Colour(139, 0, 0), \
 			wx.Colour(0, 139, 0), wx.Colour(30, 144, 255), wx.Colour(255, 255, 255), \
 			wx.Colour(143, 188, 143), wx.Colour(255, 20, 147), wx.Colour(72, 61, 139), wx.Colour(220, 220, 220), wx.Colour(0, 0, 0), wx.Colour(30, 144, 255), wx.Colour(224, 255, 255)] 
-		elif currentColorSet == "Maritime" :
+		elif currentColorSet == "Maritime":
 			self.colorList = [ wx.Colour(60, 179, 113), wx.Colour(250, 128, 114), wx.Colour(250, 128, 114), wx.Colour(250, 128, 114), \
 			wx.Colour(72, 61, 139), wx.Colour(92, 92, 92), wx.Colour(25, 25, 112), \
 			wx.Colour(125, 38, 205), wx.Colour(255, 99, 71), wx.Colour(255, 0, 0), \
 			wx.Colour(0, 255, 0), wx.Colour(255, 0, 0), wx.Colour(0, 255, 0), \
 			wx.Colour(255, 255, 255), wx.Colour(255, 192, 203), wx.Colour(191, 239, 255), wx.Colour(102, 205, 170), wx.Colour(54, 100, 139), wx.Colour(30, 144, 255), wx.Colour(224, 255, 255)] 
-		elif currentColorSet == "Earth" :
+		elif currentColorSet == "Earth":
 			self.colorList = [ wx.Colour(112, 128, 144), wx.Colour(85, 107, 47), wx.Colour(85, 107, 47), wx.Colour(85, 107, 47), \
 			wx.Colour(0, 255, 255), wx.Colour(150, 150, 150), wx.Colour(135, 206, 235), \
 			wx.Colour(238, 130, 238), wx.Colour(165, 42, 42), wx.Colour(255, 0, 0), \
 			wx.Colour(0, 255, 0), wx.Colour(0, 0, 255), wx.Colour(0, 255, 127), \
 			wx.Colour(255, 255, 255), wx.Colour(255, 105, 180), wx.Colour(165, 42, 42), wx.Colour(255, 222, 173), wx.Colour(165, 42, 42), wx.Colour(30, 144, 255), wx.Colour(224, 255, 255)] 
-		elif currentColorSet == "Santa Fe" :
+		elif currentColorSet == "Santa Fe":
 			self.colorList = [ wx.Colour(0, 100, 0), wx.Colour(99, 184, 255), wx.Colour(99, 184, 255), wx.Colour(99, 184, 255), \
 			wx.Colour(0, 255, 255), wx.Colour(255, 228, 225), wx.Colour(255, 105, 180), \
 			wx.Colour(160, 32, 240), wx.Colour(255, 192, 203), wx.Colour(255, 0, 0), \
 			wx.Colour(0, 255, 0), wx.Colour(255, 0, 0), wx.Colour(255, 255, 255), \
 			wx.Colour(155, 205, 155), wx.Colour(255, 20, 147), wx.Colour(100, 149, 237), wx.Colour(205, 85, 85), wx.Colour(255, 231, 186), wx.Colour(30, 144, 255), wx.Colour(224, 255, 255)] 
-		elif currentColorSet == "Custom" :
-			for key in self.parent.Window.colorDictKeys :
+		elif currentColorSet == "Custom":
+			for key in self.parent.Window.colorDictKeys:
 				self.colorList.append(self.parent.Window.colorDict[key])
 
 		# 9/12/2012 brgtodo: list of colorPickers?
@@ -1048,78 +1250,78 @@ class ColorTableDialog(wx.Dialog):
 	def ChangeHoleColor(self, event):
 		idx = event.GetId() - 101 # see 9/17/2012 brg
 		self.overlapcolorList.pop(idx)
-		if idx == 0 :
+		if idx == 0:
 			self.overlapcolorList.insert(idx, self.holePicker01.GetColour())
-		elif idx == 1 :
+		elif idx == 1:
 			self.overlapcolorList.insert(idx, self.holePicker02.GetColour())
-		elif idx == 2 :
+		elif idx == 2:
 			self.overlapcolorList.insert(idx, self.holePicker03.GetColour())
-		elif idx == 3 :
+		elif idx == 3:
 			self.overlapcolorList.insert(idx, self.holePicker04.GetColour())
-		elif idx == 4 :
+		elif idx == 4:
 			self.overlapcolorList.insert(idx, self.holePicker05.GetColour())
-		elif idx == 5 :
+		elif idx == 5:
 			self.overlapcolorList.insert(idx, self.holePicker06.GetColour())
-		elif idx == 6 :
+		elif idx == 6:
 			self.overlapcolorList.insert(idx, self.holePicker07.GetColour())
-		elif idx == 7 :
+		elif idx == 7:
 			self.overlapcolorList.insert(idx, self.holePicker08.GetColour())
-		elif idx == 8 :
+		elif idx == 8:
 			self.overlapcolorList.insert(idx, self.holePicker09.GetColour())
 
 	def ChangeColor(self, event):
 		self.colorSet.SetSelection(self.CustomIndex)
 		idx = event.GetId() - 1
 		self.colorList.pop(idx)
-		if idx == 0 :
+		if idx == 0:
 			self.colorList.insert(idx, self.colorPicker01.GetColour())
-		elif idx == 1 :
+		elif idx == 1:
 			self.colorList.insert(idx, self.colorPicker02.GetColour())
-		elif idx == 2 :
+		elif idx == 2:
 			self.colorList.insert(idx, self.colorPicker03.GetColour())
-		elif idx == 3 :
+		elif idx == 3:
 			self.colorList.insert(idx, self.colorPicker04.GetColour())
-		elif idx == 4 :
+		elif idx == 4:
 			self.colorList.insert(idx, self.colorPicker05.GetColour())
-		elif idx == 5 :
+		elif idx == 5:
 			self.colorList.insert(idx, self.colorPicker06.GetColour())
-		elif idx == 6 :
+		elif idx == 6:
 			self.colorList.insert(idx, self.colorPicker07.GetColour())
-		elif idx == 7 :
+		elif idx == 7:
 			self.colorList.insert(idx, self.colorPicker08.GetColour())
-		elif idx == 8 :
+		elif idx == 8:
 			self.colorList.insert(idx, self.colorPicker09.GetColour())
-		elif idx == 9 :
+		elif idx == 9:
 			self.colorList.insert(idx, self.colorPicker10.GetColour())
-		elif idx == 10 :
+		elif idx == 10:
 			self.colorList.insert(idx, self.colorPicker11.GetColour())
-		elif idx == 11 :
+		elif idx == 11:
 			self.colorList.insert(idx, self.colorPicker12.GetColour())
-		elif idx == 12 :
+		elif idx == 12:
 			self.colorList.insert(idx, self.colorPicker13.GetColour())
-		elif idx == 13 :
+		elif idx == 13:
 			self.colorList.insert(idx, self.colorPicker14.GetColour())
-		elif idx == 14 :
+		elif idx == 14:
 			self.colorList.insert(idx, self.colorPicker15.GetColour())
-		elif idx == 15 :
+		elif idx == 15:
 			self.colorList.insert(idx, self.colorPicker16.GetColour())
-		elif idx == 16 :
+		elif idx == 16:
 			self.colorList.insert(idx, self.colorPicker17.GetColour())
-		elif idx == 17 :
+		elif idx == 17:
 			self.colorList.insert(idx, self.colorPicker18.GetColour())
-		elif idx == 18 :
+		elif idx == 18:
 			self.colorList.insert(idx, self.colorPicker19.GetColour())
-		elif idx == 19 :
+		elif idx == 19:
 			self.colorList.insert(idx, self.colorPicker20.GetColour())
 
 	def OnApplyColor(self, event):
 		i = 0
-		for key in self.parent.Window.colorDictKeys :
+		for key in self.parent.Window.colorDictKeys:
 			self.parent.Window.colorDict[key] = self.colorList[i]
 			i = i + 1
 
 		self.parent.Window.overlapcolorList = []
-		for i in range(9) :
+		for i in range(9):
 			self.parent.Window.overlapcolorList.insert(i, self.overlapcolorList[i])
 		self.parent.Window.UpdateDrawing()
 
@@ -1131,12 +1333,16 @@ class CommentTextCtrl(wx.TextCtrl):
 
 	# for unambiguous CSV output, don't allow commas in comment field
 	def _prohibitCommas(self, evt):
-		if chr(evt.GetKeyCode()) != ',':
+		try:
+			if chr(evt.GetKeyCode()) != ',':
+				evt.Skip()
+		except ValueError: # handle key code out of 0-255 range (e.g arrow keys)
+			print("Can't convert key code {} to char".format(evt.GetKeyCode()))
 			evt.Skip()
 
 # adjust a core's MCD based on a percentage or a fixed distance,
 # resulting in an affine shift of type SET
-class ProjectDialog(wx.Dialog):
+class SetDialog(wx.Dialog):
 	def __init__(self, parent):
 		self.parent = parent
 		self.coreData = {}
@@ -1155,18 +1361,45 @@ class ProjectDialog(wx.Dialog):
 		wx.Dialog.__init__(self, parent, -1, "SET", size=(300,360), style=wx.DEFAULT_DIALOG_STYLE |
 						   wx.NO_FULL_REPAINT_ON_RESIZE |wx.STAY_ON_TOP)
 		self.SetBackgroundColour(wx.WHITE)
-		
 		dlgSizer = wx.BoxSizer(wx.VERTICAL)
+
+		coreSizer = wx.StaticBoxSizer(wx.StaticBox(self, -1, "Apply shift to:"), orient=wx.VERTICAL)
+		hsz = wx.BoxSizer(wx.HORIZONTAL)
+		self.holeText = wx.StaticText(self, -1, "Hole:")
+		hsz.Add(self.holeText, 0, wx.TOP | wx.BOTTOM | wx.ALIGN_CENTER_VERTICAL, 5)
+		self.holeChoice = wx.Choice(self, -1, size=(70,-1))
+		hsz.Add(self.holeChoice, 0, wx.ALL, 5)
+		self.coreChoice = wx.Choice(self, -1, size=(70,-1))
+		self.coreText = wx.StaticText(self, -1, "Core:")
+		hsz.Add(self.coreText, 0, wx.TOP | wx.BOTTOM | wx.ALIGN_CENTER_VERTICAL, 5)
+		hsz.Add(self.coreChoice, 0, wx.ALL, 5)
+		coreSizer.Add(hsz, 0, wx.EXPAND)		
+
+		self.coreAndBelow = wx.RadioButton(self, -1, "Selected core and all untied cores below in this hole", style=wx.RB_GROUP)
+		self.coreOnly = wx.RadioButton(self, -1, "Selected core only")
+
+		chainSizer = wx.BoxSizer(wx.HORIZONTAL)
+		self.coreAndChain = wx.RadioButton(self, -1, "Entire TIE chain starting from core:")
+		self.rootCoreChoice = wx.Choice(self, -1)
+		self.rootCoreChoice.Enable(False)
+		chainSizer.Add(self.coreAndChain, 0, wx.EXPAND | wx.RIGHT, 5)
+		chainSizer.Add(self.rootCoreChoice, 0)
+
+		self.coreAndBelow.SetValue(True)
+		coreSizer.Add(self.coreAndBelow, 0, wx.EXPAND | wx.TOP, 5)
+		coreSizer.Add(self.coreOnly, 0, wx.EXPAND | wx.TOP, 5)
+		coreSizer.Add(chainSizer, 0, wx.EXPAND | wx.TOP, 5)
 		
 		methodSizer = wx.StaticBoxSizer(wx.StaticBox(self, -1, "Shift by:"), orient=wx.VERTICAL)
 		hsz = wx.BoxSizer(wx.HORIZONTAL)
-		self.percentRadio = wx.RadioButton(self, -1, "Percentage:")
+		self.percentRadio = wx.RadioButton(self, -1, "Percentage:", style=wx.RB_GROUP)
 		self.percentRadio.SetValue(True)
 		self.percentField = wx.TextCtrl(self, -1, "10.0", size=(70,-1))
 		hsz2 = wx.BoxSizer(wx.HORIZONTAL)
 		hsz2.Add(self.percentRadio, 0, wx.RIGHT, 5)
 		hsz2.Add(self.percentField)
-		hsz2.Add(wx.StaticText(self, -1, "%"), 0, wx.LEFT, 3)
+		self.percentLabel = wx.StaticText(self, -1, "%")
+		hsz2.Add(self.percentLabel, 0, wx.LEFT, 3)
 		hsz3 = wx.BoxSizer(wx.HORIZONTAL)
 		self.fixedRadio = wx.RadioButton(self, -1, "Fixed distance:")
 		self.fixedField = wx.TextCtrl(self, -1, "0.0", size=(70,-1))
@@ -1179,34 +1412,7 @@ class ProjectDialog(wx.Dialog):
 		
 		self.currentShiftText = wx.StaticText(self, -1, "Current shift:")
 		methodSizer.Add(self.currentShiftText, 0, wx.EXPAND | wx.TOP, 5)
-		
-		shiftSizer = wx.BoxSizer(wx.HORIZONTAL)
-		self.shiftLabel = wx.StaticText(self, -1, "Suggested shift: ")
-		self.shiftField = wx.TextCtrl(self, -1, "1.000", size=(80,-1))
-		self.shiftDiffText = wx.StaticText(self, -1, "(+0.432)")
-		shiftSizer.Add(self.shiftLabel, 0, wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, 3)
-		shiftSizer.Add(self.shiftField, 0, wx.RIGHT, 2)
-		shiftSizer.Add(self.shiftDiffText, 1, wx.ALIGN_CENTER_VERTICAL)
-		
-		methodSizer.Add(shiftSizer, 0, wx.EXPAND | wx.TOP, 10)
-		
 
-		coreSizer = wx.StaticBoxSizer(wx.StaticBox(self, -1, "Apply shift to:"), orient=wx.VERTICAL)
-		hsz = wx.BoxSizer(wx.HORIZONTAL)
-		hsz.Add(wx.StaticText(self, -1, "Hole:"), 0, wx.TOP | wx.BOTTOM | wx.ALIGN_CENTER_VERTICAL, 5)
-		self.holeChoice = wx.Choice(self, -1, size=(70,-1))
-		hsz.Add(self.holeChoice, 0, wx.ALL, 5)
-		self.coreChoice = wx.Choice(self, -1, size=(70,-1))
-		hsz.Add(wx.StaticText(self, -1, "Core:"), 0, wx.TOP | wx.BOTTOM | wx.ALIGN_CENTER_VERTICAL, 5)
-		hsz.Add(self.coreChoice, 0, wx.ALL, 5)
-		coreSizer.Add(hsz, 0, wx.EXPAND)
-		
-		self.coreOnly = wx.RadioButton(self, -1, "Selected core only", style=wx.RB_GROUP)
-		self.coreAndBelow = wx.RadioButton(self, -1, "Selected core and all below")
-		self.coreOnly.SetValue(True)
-		coreSizer.Add(self.coreOnly, 0, wx.EXPAND | wx.TOP, 5)
-		coreSizer.Add(self.coreAndBelow, 0, wx.EXPAND | wx.TOP, 5)
-		
 		commentSizer = wx.BoxSizer(wx.HORIZONTAL)
 		commentSizer.Add(wx.StaticText(self, -1, "Comment:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
 		self.commentField = CommentTextCtrl(self, -1)
@@ -1227,42 +1433,55 @@ class ProjectDialog(wx.Dialog):
 		self.Fit()
 
 		self.InitChoices()
+		self.InitChainRoots()
 
 		self.Bind(wx.EVT_CHOICE, self.UpdateCoreChoice, self.holeChoice)
 		self.Bind(wx.EVT_CHOICE, self.UpdateData, self.coreChoice)
 		self.Bind(wx.EVT_BUTTON, self.OnApply, self.applyButton)
+		self.Bind(wx.EVT_RADIOBUTTON, self.MethodRadioChanged, self.coreAndBelow)
+		self.Bind(wx.EVT_RADIOBUTTON, self.MethodRadioChanged, self.coreAndChain)
+		self.Bind(wx.EVT_RADIOBUTTON, self.MethodRadioChanged, self.coreOnly)
 		self.Bind(wx.EVT_RADIOBUTTON, self.UpdateData, self.percentRadio)
 		self.Bind(wx.EVT_RADIOBUTTON, self.UpdateData, self.fixedRadio)
 		self.Bind(wx.EVT_TEXT, self.UpdateData, self.percentField)
 		self.Bind(wx.EVT_TEXT, self.UpdateData, self.fixedField)
-		self.Bind(wx.EVT_TEXT, self.OnSuggShiftChange, self.shiftField)
 
 	def OnApply(self, evt):
-		# str() to convert from type unicode
-		self.outHole = str(self.holeChoice.GetStringSelection())
-		self.outCore = str(self.coreChoice.GetStringSelection())
-
-		# ensure shifted cores aren't part of current splice
-		checkBelow = self.coreAndBelow.GetValue()
-		if not self.parent.CanAdjustCore(self.outHole, '1' if checkBelow else self.outCore, checkBelow):
-			return
-		
+		# gather and validate fixed distance/percentage input
 		try:
-			self.outOffset = float(self.shiftField.GetValue())
+			self.outOffset = float(self.fixedField.GetValue())
 		except ValueError:
-			try:
-				self.outOffset = float(self.fixedField.GetValue())
-			except ValueError:
-				self.outOffset = 0.0
-		self.outComment = self.commentField.GetValue()
-
-		if self.percentRadio.GetValue():
+			self.parent.OnShowMessage("Error", "Invalid fixed distance {}".format(self.fixedField.GetValue()), 1)
+			return
+		try:
 			self.outRate = float(self.percentField.GetValue())/100.0 + 1.0
+		except ValueError:
+			self.parent.OnShowMessage("Error", "Invalid percentage {}".format(self.percentField.GetValue()), 1)
+			return
+
+		# str() to convert from type unicode
+		if self.coreAndChain.GetValue():
+			hcstr = str(self.rootCoreChoice.GetStringSelection())
+			charNumPattern = "([A-Z]+)([0-9]+)"
+			hc_items = re.match(charNumPattern, hcstr)
+			if hc_items and len(hc_items.groups()) == 2:
+				self.outHole = hc_items.groups()[0]
+				self.outCore = hc_items.groups()[1]
+			else:
+				# In the unlikely event someone got this far with non-standard hole and core naming,
+				# notify and refuse to proceed with this method.
+				errstr = "Couldn't parse hole-core string {}, expected alphabetic hole (A-Z) and numeric core (1+)".format(hcstr)
+				self.parent.OnShowMessage("Error", errstr, 1)
+				return
 		else:
-			self.outRate = None
+			self.outHole = str(self.holeChoice.GetStringSelection())
+			self.outCore = str(self.coreChoice.GetStringSelection())
+
+		self.outComment = self.commentField.GetValue()
 		# self.outType already set
 		self.EndModal(wx.ID_OK)
 
+	# Populate self.coreData with loaded holes and cores
 	def InitChoices(self):
 		self.coreData = {}
 		self.holeChoice.Clear()
@@ -1298,6 +1517,18 @@ class ProjectDialog(wx.Dialog):
 			self.holeChoice.Select(0)
 			self.UpdateCoreChoice()
 
+	# Populate self.rootCoreChoice with TIE chain roots, or disable
+	# chain root controls if no roots exist.
+	def InitChainRoots(self):
+		roots = self.parent.affineManager.getChainRoots()
+		if len(roots) > 0:
+			for crstr in sorted([cr[0] + cr[1] for cr in roots]):
+				self.rootCoreChoice.Append(crstr)
+		else:
+			self.coreAndChain.Enable(False)
+			self.rootCoreChoice.Enable(False)
+
+	# Update core dropdown with available cores for currently-selected hole
 	def UpdateCoreChoice(self, evt=None):
 		curHoleIndex = self.holeChoice.GetSelection()
 		if self.lastHole == curHoleIndex:
@@ -1312,7 +1543,26 @@ class ProjectDialog(wx.Dialog):
 			self.coreChoice.Select(0)
 			self.UpdateData()
 
-	# update growth rate, current core shift, etc 
+	# Enable/disable controls based on 'Entire TIE chain...' radio state.
+	def MethodRadioChanged(self, evt=None):
+		chainSelected = self.coreAndChain.GetValue()
+		if chainSelected:
+			if self.percentRadio.GetValue():
+				self.fixedRadio.SetValue(True)
+
+		self.rootCoreChoice.Enable(chainSelected) # only enabled if chain radio is selected
+
+		# percent and hole/core dropdowns aren't used in chain SET, disable if selected
+		self.holeText.Enable(not chainSelected)
+		self.holeChoice.Enable(not chainSelected)
+		self.coreText.Enable(not chainSelected)
+		self.coreChoice.Enable(not chainSelected)
+		self.percentRadio.Enable(not chainSelected)
+		self.percentField.Enable(not chainSelected)
+		self.percentLabel.Enable(not chainSelected)
+
+	# Based on selected hole/core pair, update list of affected cores in
+	# self.outCoreList, and udpate current core shift text.
 	def UpdateData(self, evt=None):
 		curHole = self.holeChoice.GetStringSelection()
 		coreIndex = self.coreChoice.GetSelection()
@@ -1328,52 +1578,14 @@ class ProjectDialog(wx.Dialog):
 		self.outCoreList = []
 		for coreTuple in [ct for ct in self.coreData[curHole] if int(ct[0]) >= int(self.coreChoice.GetStringSelection())]:
 			self.outCoreList.append(coreTuple[0])
-		#print "Updated outCoreList = {}".format(self.outCoreList)
-
-		if self.percentRadio.GetValue():
-			try:
-				pct = float(self.percentField.GetValue())/100.0 + 1.0 
-				self.suggShift = round(curCore[1] * pct, 3) - curCore[1]
-			except ValueError:
-				self.suggShift = None
-		else: # fixed distance
-			try:
-				dist = float(self.fixedField.GetValue())
-				self.suggShift = dist
-			except ValueError:
-				self.suggShift = None
 
 		self.UpdateCurShiftText()
-		self.UpdateSuggShiftText()
-		self.UpdateShiftDiffText()
-
-	def UpdateSuggShiftText(self):
-		if self.suggShift is not None:
-			self.shiftField.SetValue(str(self.suggShift))
-		else:
-			self.shiftField.SetValue("")
-			
-	def UpdateShiftDiffText(self):
-		if self.suggShift is not None:
-			shiftDiff = round(self.suggShift - self.curCoreShift, 3) 
-			sign = "+" if shiftDiff >= 0 else ""
-			self.shiftDiffText.SetLabel("(" + sign + str(shiftDiff) + ")")
-		else:
-			self.shiftDiffText.SetLabel("")
 	
 	def UpdateCurShiftText(self):
 		if self.curCoreName is not None:
 			self.currentShiftText.SetLabel("Current " + self.curCoreName + " affine shift: " + str(self.curCoreShift))
 		else:
 			self.currentShiftText.SetLabel("Current affine shift: [n/a for All]")
-		
-	def OnSuggShiftChange(self, evt):
-		origSuggShift = self.suggShift
-		try:
-			self.suggShift = float(self.shiftField.GetValue())
-			self.UpdateShiftDiffText()
-		except ValueError:
-			self.suggShift = origSuggShift
 
 
 class CorrParamsDialog(wx.Dialog):
@@ -1468,33 +1680,305 @@ class DepthRangeDialog(wx.Dialog):
 		self.EndModal(wx.ID_OK)
 
 
+class DecimateDialog(wx.Dialog):
+	def __init__(self, parent, deciValue):
+		wx.Dialog.__init__(self, parent, -1, "Create Decimate Filter", style=wx.CAPTION)
+		self.deciValue = deciValue
+		self.createGUI()
+
+	def createGUI(self):
+		decValPanel = wx.Panel(self, -1)
+		self.decimate = wx.TextCtrl(decValPanel, -1, str(self.deciValue))
+		dvSizer = wx.BoxSizer(wx.HORIZONTAL)
+		dvSizer.Add(wx.StaticText(decValPanel,  -1, "Show every"), 0, wx.LEFT | wx.RIGHT, 5)
+		dvSizer.Add(self.decimate, 0, wx.RIGHT, 5)
+		dvSizer.Add(wx.StaticText(decValPanel,  -1, "points"), 0, wx.LEFT | wx.RIGHT, 5)
+		decValPanel.SetSizer(dvSizer)
+
+		btnPanel = OkButtonPanel(self, okName="Apply")
+		self.Bind(wx.EVT_BUTTON, self.OnApply, btnPanel.ok)
+		sizer = wx.BoxSizer(wx.VERTICAL)
+		sizer.Add(decValPanel, 1, wx.ALL, 10)
+		sizer.Add(btnPanel, 0, wx.ALIGN_CENTER)
+		self.SetSizer(sizer)
+		self.Fit()
+
+	def OnInvalid(self):
+		dlg = MessageDialog(self, "Error", "Value must be a positive integer.", 1)
+		dlg.ShowModal()
+		dlg.Destroy()
+
+	def OnApply(self, evt):
+		deciValue = None
+		try:
+			deciValue = int(self.decimate.GetValue())
+		except ValueError:
+			self.OnInvalid()
+			return
+		if deciValue < 1:
+			self.OnInvalid()
+			return
+		self.deciValue = deciValue
+		self.EndModal(wx.ID_OK)
+
+
+class SmoothDialog(wx.Dialog):
+	def __init__(self, parent, width=9, units=1, style=1):
+		wx.Dialog.__init__(self, parent, -1, "Create Smooth Filter", style=wx.CAPTION)
+		self.parent = parent
+		self.createGUI()
+		self.width.SetValue(str(width))
+		self.units.SetSelection(units - 1)
+		self.style.SetSelection(style)
+
+	def createGUI(self):
+		smoothPanel = wx.Panel(self, -1)
+		smoothParamsSizer = wx.GridBagSizer(3, 3)
+		
+		smoothParamsSizer.Add(wx.StaticText(smoothPanel, -1, "Width"), (0,0), flag=wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, border=5)
+		self.width = wx.TextCtrl(smoothPanel, -1, "9", size=(60, 25))
+		smoothParamsSizer.Add(self.width, (0,1), flag=wx.BOTTOM, border=3)
+
+		self.units = wx.Choice(smoothPanel, -1, choices=["Points", "Depth (cm)"])
+		self.units.SetForegroundColour(wx.BLACK)
+		smoothParamsSizer.Add(self.units, (0,2), flag=wx.ALIGN_CENTER_VERTICAL)
+
+		smoothParamsSizer.Add(wx.StaticText(smoothPanel, -1, "Display"), (1,0), flag=wx.RIGHT, border=5)
+		self.style = wx.Choice(smoothPanel, -1, (0,0), (180, -1), ("Original Only", "Smoothed Only", "Original & Smoothed"))
+		self.style.SetForegroundColour(wx.BLACK)
+		smoothParamsSizer.Add(self.style, (1,1), span=(1,2), flag=wx.BOTTOM, border=5)
+		smoothPanel.SetSizer(smoothParamsSizer)
+
+		btnPanel = OkButtonPanel(self, okName="Apply")
+		self.Bind(wx.EVT_BUTTON, self.OnApply, btnPanel.ok)
+		sizer = wx.BoxSizer(wx.VERTICAL)
+		sizer.Add(smoothPanel, 1, wx.EXPAND | wx.ALL, 10)
+		sizer.Add(btnPanel, 0, wx.ALIGN_CENTER)
+		self.SetSizer(sizer)
+		self.Fit()
+
+	def OnInvalid(self):
+		dlg = MessageDialog(self, "Error", "Bad smoothing", 1)
+		dlg.ShowModal()
+		dlg.Destroy()
+
+	def OnApply(self, evt):
+		width = int(self.width.GetValue())
+		units = self.units.GetSelection() + 1
+		style = self.style.GetSelection()
+		self.outSmoothParams = smooth.SmoothParameters(width, units, style)
+		self.EndModal(wx.ID_OK)
+
+
+class CullDialog(wx.Dialog):
+	def __init__(self, parent, cullData):
+		wx.Dialog.__init__(self, parent, -1, "Create Cull Filter", style=wx.CAPTION)
+		self.parent = parent
+		self.createGUI()
+		self.fillValues(cullData)
+
+	def createGUI(self):
+		cullSizer = wx.BoxSizer(wx.VERTICAL)
+
+		edgesSizer = wx.StaticBoxSizer(wx.StaticBox(self, -1, 'Cull data from sample edges'))
+		cullTopsPanel = wx.Panel(self, -1)
+		ctSizer = wx.BoxSizer(wx.HORIZONTAL)
+		self.cullTops = wx.TextCtrl(cullTopsPanel, -1, "", size=(50,-1))
+		ctSizer.Add(wx.StaticText(cullTopsPanel, -1, "Cull"), 0, wx.LEFT | wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, 5)
+		ctSizer.Add(self.cullTops, 0, wx.ALIGN_CENTER_VERTICAL)
+		ctSizer.Add(wx.StaticText(cullTopsPanel, -1, "cm from core tops"), 0, wx.LEFT | wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, 5)
+		cullTopsPanel.SetSizer(ctSizer)
+		edgesSizer.Add(cullTopsPanel, 0, wx.ALL, 5)
+		cullSizer.Add(edgesSizer, 0, wx.ALL, 5)
+
+		outlierSizer = wx.StaticBoxSizer(wx.StaticBox(self, -1, 'Cull outliers'), orient=wx.VERTICAL)
+		cullGTPanel = wx.Panel(self, -1)
+		cgtSizer = wx.BoxSizer(wx.HORIZONTAL)
+		cgtSizer.Add(wx.StaticText(cullGTPanel, -1, "Cull data values > "), 0)
+		self.cullGT = wx.TextCtrl(cullGTPanel, -1, "")
+		cgtSizer.Add(self.cullGT, 0)
+		cullGTPanel.SetSizer(cgtSizer)
+		outlierSizer.Add(cullGTPanel, 0, wx.EXPAND | wx.ALL, 5)
+
+		cullLTPanel = wx.Panel(self, -1)
+		cltSizer = wx.BoxSizer(wx.HORIZONTAL)
+		cltSizer.Add(wx.StaticText(cullLTPanel, -1, "Cull data values < "), 0)
+		self.cullLT = wx.TextCtrl(cullLTPanel, -1, "")
+		cltSizer.Add(self.cullLT, 0)
+		cullLTPanel.SetSizer(cltSizer)
+		outlierSizer.Add(cullLTPanel, 0, wx.EXPAND | wx.ALL, 5)
+
+		cullSizer.Add(outlierSizer, 0, wx.ALL, 5)
+
+		btnPanel = OkButtonPanel(self, okName="Apply")
+		self.Bind(wx.EVT_BUTTON, self.OnApply, btnPanel.ok)
+		cullSizer.Add(btnPanel, 0, wx.ALIGN_CENTER | wx.ALL, 5)
+		self.SetSizer(cullSizer)
+		self.Fit()
+
+	def _nonDummyValue(self, cullSign, cullValue):
+		return (cullSign == '>' and float(cullValue) < 9999.0) or (cullSign == '<' and float(cullValue) > -9999.0)
+
+	# Populate fields with values from cull data, omitting dummy values
+	def fillValues(self, cullData):
+		datalen = len(cullData)
+		if datalen >= 3:
+			self.cullTops.SetValue(cullData[2])
+		if datalen == 5 or datalen == 6:
+			if self._nonDummyValue(cullData[3], cullData[4]):
+				if cullData[3] == ">":
+					self.cullGT.SetValue(cullData[4])
+				else:
+					self.cullLT.SetValue(cullData[4])
+		elif datalen == 7 or datalen == 8:
+			if self._nonDummyValue(cullData[3], cullData[4]):
+				if cullData[3] == ">":
+					self.cullGT.SetValue(cullData[4])
+				else:
+					self.cullLT.SetValue(cullData[4])
+			if self._nonDummyValue(cullData[5], cullData[6]):
+				if cullData[5] == ">":
+					self.cullGT.SetValue(cullData[6])
+				else:
+					self.cullLT.SetValue(cullData[6])
+
+	def OnInvalid(self):
+		dlg = MessageDialog(self, "Error", "Invalid cull parameter", 1)
+		dlg.ShowModal()
+		dlg.Destroy()
+
+	def hasTops(self):
+		return self.cullTops.GetValue() != ""
+
+	def hasGT(self):
+		return self.cullGT.GetValue() != ""
+
+	def hasLT(self):
+		return self.cullLT.GetValue() != ""
+
+	def OnApply(self, evt):
+		try:
+			self.outCullTops = 0.0 if not self.hasTops() else float(self.cullTops.GetValue())
+			self.outCullValue1 = 9999.99
+			self.outCullValue2 = -9999.99
+			self.outSign1 = 1
+			self.outSign2 = 2
+			self.outJoin = 1
+			if self.hasGT() and self.hasLT():
+				self.outSign1 = 1
+				self.outCullValue1 = float(self.cullGT.GetValue())
+				self.outSign2 = 2
+				self.outCullValue2 = float(self.cullLT.GetValue())
+				self.outJoin = 2
+			elif self.hasGT() and not self.hasLT():
+				self.outCullValue1 = float(self.cullGT.GetValue())
+				self.outSign1 = 1
+			elif self.hasLT() and not self.hasGT():
+				self.outCullValue1 = float(self.cullLT.GetValue())
+				self.outSign1 = 2
+		except ValueError:
+			self.OnInvalid()
+			return
+		self.EndModal(wx.ID_OK)
+
+
+class ApplicationPreferencesDialog(wx.Dialog):
+	def __init__(self, parent, prefs):
+		wx.Dialog.__init__(self, parent, -1, "Correlator Preferences", size=(200,200), style=wx.CAPTION)
+
+		self.prefsMap = prefs
+
+		panel = wx.StaticBoxSizer(wx.StaticBox(self, -1, "Data Loading Options"), orient=wx.VERTICAL)
+		self.inferSectionSummary = wx.CheckBox(self, -1, "Infer Section Summary if none is provided")
+		panel.Add(self.inferSectionSummary, 0, wx.BOTTOM, 5)
+		self.checkForSpliceCores = wx.CheckBox(self, -1, "Check for cores required by enabled splice")
+		panel.Add(self.checkForSpliceCores)
+		
+		buttonPanel = wx.Panel(self, -1)
+		buttonSizer = wx.BoxSizer(wx.HORIZONTAL)
+		self.cancelButton = wx.Button(buttonPanel, wx.ID_CANCEL, "Cancel")
+		self.okButton = wx.Button(buttonPanel, wx.ID_OK, "OK")
+		self.okButton.SetDefault()
+		self.Bind(wx.EVT_BUTTON, self.OnOK, self.okButton)
+		buttonSizer.Add(self.cancelButton, 0, wx.ALL, 5)
+		buttonSizer.Add(self.okButton, 0, wx.ALL, 5)
+		buttonPanel.SetSizer(buttonSizer)
+
+		dlgSizer = wx.BoxSizer(wx.VERTICAL)
+		dlgSizer.Add(panel, wx.ALL, 10)
+		dlgSizer.Add(buttonPanel, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+		self.SetSizerAndFit(dlgSizer)
+		self.InitPrefs(prefs)
+
+	def InitPrefs(self, prefs):
+		self.inferSectionSummary.SetValue(self.prefsMap['inferSectionSummary'])
+		self.checkForSpliceCores.SetValue(self.prefsMap['checkForSpliceCores'])
+
+	def UpdatePrefs(self):
+		self.prefsMap['inferSectionSummary'] = self.inferSectionSummary.IsChecked()
+		self.prefsMap['checkForSpliceCores'] = self.checkForSpliceCores.IsChecked()
+
+	def OnOK(self, evt):
+		self.UpdatePrefs()
+		self.EndModal(wx.ID_OK)
+
+
 class AboutDialog(wx.Dialog):
-	def __init__(self, parent, version) :
-		wx.Dialog.__init__(self, parent, -1, "About Correlator " + version, size=(500, 330), style= wx.DEFAULT_DIALOG_STYLE |wx.NO_FULL_REPAINT_ON_RESIZE |wx.STAY_ON_TOP)
+	def __init__(self, parent, version):
+		wx.Dialog.__init__(self, parent, -1, "About Correlator " + version, style= wx.DEFAULT_DIALOG_STYLE |wx.NO_FULL_REPAINT_ON_RESIZE |wx.STAY_ON_TOP)
 
-		desctext = "Correlator facilitates the adjustment of core depth data drilled in a multi-hole scenario by usually correlating measured whole-core (GRA, MSLP, PWC, #NGR) or half-core (RSC) sensor data across holes using an optimized cross-correlation approach."
+		vertSizer = wx.BoxSizer(wx.VERTICAL)
+		self.SetSizer(vertSizer)
 
-		desc = wx.StaticText(self, -1, desctext, (10,10))
-		desc.Wrap(480)
+		description = "The Correlator application facilitates the construction of " \
+					"'Core Composite depth below Sea Floor' (CCSF) depth scales when " \
+					"core data from multiple holes are available, by allowing users " \
+					"to align correlative features across holes and shift the core " \
+					"depths accordingly. Correlator also facilitates the definition " \
+					"of stratigraphic splices at the CCSF scale by allowing users to " \
+					"select the most suitable and contiguous core intervals."
 
-		wx.HyperlinkCtrl(self, -1, 'For more detailed information, please visit the Correlator Website', 'http://www.corewall.org', (15,95))
+		desc = wx.StaticText(self, -1, description)
+		desc.Wrap(530)
+		vertSizer.Add(desc, 0, wx.ALL, 10)
 
-		wx.StaticText(self, -1, 'Developers:  Sean Higgins (sean@ldeo.columbia.edu)', (20, 130))
-		wx.StaticText(self, -1, 'Brian Grivna (brian.grivna@gmail.com)', (103, 150))
-		wx.StaticText(self, -1, 'Hyejung Hur (hhur2@uic.edu)', (103, 170))
+		corryUrl = "https://csdco.umn.edu/resources/software/correlator"
+		link = wx.HyperlinkCtrl(self, -1, 'For more detailed information, please visit the Correlator Website', corryUrl)
+		vertSizer.Add(link, 0, wx.LEFT, 10)
+		vertSizer.Add((15,15), 0) # add some vertical space between sections
 
-		wx.StaticText(self, -1, 'Organizations:', (20, 210))
-		wx.HyperlinkCtrl(self, -1, 'EVL (University of Illinois)', 'http://www.evl.uic.edu', (25, 230))
-		wx.HyperlinkCtrl(self, -1, 'National Science Foundation', 'http://www.nsf.gov/', (25, 250))
-		wx.HyperlinkCtrl(self, -1, 'LacCore (University of Minnesota)', 'http://lrc.geo.umn.edu/LacCore/laccore.html', (230, 230))
-		wx.HyperlinkCtrl(self, -1, 'Lamont-Doherty Earth Observatory', 'http://www.ldeo.columbia.edu/', (230, 250))
+		vertSizer.Add(wx.StaticText(self, -1, 'Developers:'), 0, wx.LEFT, 10)
+		vertSizer.Add((5,5), 0)
+		devs = 'Peter Blum (blum@iodp.tamu.edu)  |  Brian Grivna (brian.grivna@gmail.com)'
+		vertSizer.Add(wx.StaticText(self, -1, devs), 0, wx.LEFT, 10)
+		vertSizer.Add((15,15), 0)
 
-		okBtn = wx.Button(self, wx.ID_OK, "Close", ((230, 270)))
+		devsEmeritus = 'Sean Higgins  |  Hyejung Hur'
+		vertSizer.Add(wx.StaticText(self, -1, 'Developers Emeritus:'), 0, wx.LEFT, 10)
+		vertSizer.Add((5,5), 0)
+		vertSizer.Add(wx.StaticText(self, -1, devsEmeritus), 0, wx.LEFT, 10)
+		vertSizer.Add((15,15), 0)
+
+		vertSizer.Add(wx.StaticText(self, -1, 'Organizations:'), 0, wx.LEFT, 10)
+		vertSizer.Add((5,5), 0)
+		grid = wx.FlexGridSizer(cols=2, rows=3, hgap=20, vgap=10)
+		grid.Add(wx.HyperlinkCtrl(self, -1, 'National Science Foundation', 'https://www.nsf.gov/'))
+		grid.Add(wx.HyperlinkCtrl(self, -1, 'CSDCO/LacCore (University of Minnesota)', 'https://csdco.umn.edu/'))
+		grid.Add(wx.HyperlinkCtrl(self, -1, 'IODP/JR Science Operator', 'https://iodp.tamu.edu/'))
+		grid.Add(wx.HyperlinkCtrl(self, -1, 'Lamont-Doherty Earth Observatory', 'https://www.ldeo.columbia.edu/'))
+		grid.Add(wx.HyperlinkCtrl(self, -1, 'EVL (University of Illinois)', 'https://www.evl.uic.edu/'))
+		vertSizer.Add(grid, 0, wx.LEFT | wx.RIGHT, 15)
+
+		vertSizer.Add((20,20), 0)
+		okBtn = wx.Button(self, wx.ID_OK, "Close")
+		vertSizer.Add(okBtn, 0, wx.ALIGN_CENTER | wx.BOTTOM, 10)
+
+		self.Fit() # auto-adjust dialog size to fit all elements
 		wx.EVT_KEY_UP(self, self.OnCharUp)
 
 	def OnCharUp(self,event):
 		keyid = event.GetKeyCode() 
-		if keyid == wx.WXK_ESCAPE :
+		if keyid == wx.WXK_ESCAPE:
 			self.EndModal(wx.ID_CANCEL) 
 
 
@@ -1509,36 +1993,33 @@ class BackgroundPanel(wx.Panel):
 	def OnPaint(self, evt):
 		dc = wx.BufferedPaintDC(self, self.buffer)
 
-# 9/17/2013 brg: rename to splash?
-class OpenFrame(wx.Dialog):
+class SplashScreen(wx.Dialog):
 	def __init__(self, parent, id, user, version):
-		panel_size=(800, 370)
-		wx.Dialog.__init__(self, parent, id, "Correlator " + version, size=panel_size,style= wx.DEFAULT_DIALOG_STYLE |wx.NO_FULL_REPAINT_ON_RESIZE | wx.STAY_ON_TOP)
+		panel_size = (800, 380) if platform_name[0] != "Windows" else (800, 390) # extra space for JRSO logo on Win
+		wx.Dialog.__init__(self, parent, id, "Correlator " + version, size=panel_size, style=wx.DEFAULT_DIALOG_STYLE | wx.NO_FULL_REPAINT_ON_RESIZE | wx.STAY_ON_TOP)
 
 		panel = BackgroundPanel(self, 'images/corewall_suite.jpg', panel_size)
 
 		self.version = version
-		wx.StaticText(self, -1, 'COMPOSITE, SPLICE, CORE-LOG INTEGRATION, AGE MODEL', (60, 30))
+		wx.StaticText(self, -1, 'COMPOSITE AND SPLICE', (60,30))# CORE-LOG INTEGRATION, AGE MODEL', (60, 30))
 
-		wx.StaticText(self, -1, 'User Name : ', (250, 220))
+		wx.StaticText(self, -1, 'User Name: ', (250, 220))
 		self.name = wx.TextCtrl(self, -1, user, (340, 220), size=(150, 25))
 
 		okBtn = wx.Button(panel, -1, "Start", (500, 213), size=(80, 30))
 		self.Bind(wx.EVT_BUTTON, self.OnSTART, okBtn)
 
 		self.user = user
-		if platform_name[0] == "Windows" :
+		if platform_name[0] == "Windows":
 			cancelBtn = wx.Button(panel, wx.ID_CANCEL, "Cancel", (580, 213), size=(80, 30))
 
-		wx.HyperlinkCtrl(self, -1, 'Go to Correlator Web', 'http://www.corewall.org', (60, 300))
-
-		aboutBtn = wx.Button(panel, -1, "About", (200, 290), size=(80, 30))
+		aboutBtn = wx.Button(panel, -1, "About", (50, 290), size=(80, 30))
 		self.Bind(wx.EVT_BUTTON, self.OnABOUT, aboutBtn)
 
 		wx.EVT_KEY_DOWN(self.name, self.OnPanelChar)
 		panel.Bind(wx.EVT_CHAR, self.OnPanelChar)
 
-	def OnABOUT(self, event) :
+	def OnABOUT(self, event):
 		dlg = AboutDialog(self, self.version)
 		dlg.Centre()
 		dlg.ShowModal()
@@ -1548,15 +2029,15 @@ class OpenFrame(wx.Dialog):
 		self.user = self.name.GetValue()
 		self.EndModal(wx.ID_OK)
 
-	def OnSTART(self, event) :
+	def OnSTART(self, event):
 		self.OnOK()
 
 	# Close on Escape, continue on Enter
 	def OnPanelChar(self, event):
 		keyid = event.GetKeyCode()
-		if keyid == 13 : # ENTER
+		if keyid == 13: # ENTER
 			self.OnOK()
-		elif keyid == 27 : # ESC 
+		elif keyid == 27: # ESC 
 			self.EndModal(wx.ID_CANCEL)
 		else:
 			event.Skip() # allow unhandled key events to propagate up the chain
