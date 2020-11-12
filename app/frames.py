@@ -36,7 +36,7 @@ class TopMenuFrame(wx.Frame):
 	def __init__(self, parent):
 		wx.Frame.__init__(self, parent, -1, "Tool Bar",
 						 wx.Point(20,100),
-						 style=wx.DEFAULT_DIALOG_STYLE | wx.NO_FULL_REPAINT_ON_RESIZE | wx.FRAME_FLOAT_ON_PARENT | wx.FRAME_TOOL_WINDOW)
+						 style=wx.DEFAULT_DIALOG_STYLE | wx.NO_FULL_REPAINT_ON_RESIZE | wx.STAY_ON_TOP | wx.FRAME_TOOL_WINDOW)
 
 		self.parent = parent
 		frameSizer = wx.BoxSizer(wx.VERTICAL)
@@ -86,6 +86,17 @@ class TopMenuFrame(wx.Frame):
 
 		self.SetBackgroundColour(wx.Colour(255, 255, 255))
 		wx.EVT_CLOSE(self, self.OnHide)
+
+		# self.Bind(wx.EVT_ACTIVATE, self.OnActivate, self)
+
+	# trying to get main window to pop when alt-tabbing back to Correlator...only
+	# the TopMenuFrame actually pops in front of other apps' windows...
+	# def OnActivate(self, event):
+	# 	# print("OnActivate! {}".format(event.GetActive()))
+	# 	if event.GetActive() and not self.parent.HasFocus():
+	# 		self.parent.Show()
+	# 		self.parent.Raise()
+	# 		self.parent.SetFocus()
 
 	def OnHide(self, event):
 		self.Show(False)
@@ -690,7 +701,7 @@ class CompositePanel():
 		pos = self.grText.GetScreenPositionTuple()
 		dlg.SetPosition(pos)
 		if dlg.ShowModal() == wx.ID_OK:
-			self.parent.optPanel.depthmax = dlg.outMax	# update mirrored prefs GUI (brgtodo 9/6/2014 gross)
+			self.parent.optPanel.visibleDeptHInterval = dlg.outMax	# update mirrored prefs GUI (brgtodo 9/6/2014 gross)
 			self.parent.optPanel.depthRangeMin.SetValue(str(dlg.outMin))
 			self.parent.optPanel.depthRangeMax.SetValue(str(dlg.outMax))
 			self.parent.optPanel.depthZoomSlider.SetValue(1)
@@ -3036,7 +3047,7 @@ class AgeDepthPanel():
 				self.parent.Window.splicerX = int(self.parent.Window.Width * 0.6)
 			else :
 				self.parent.Window.splicerX = self.ageX
-			self.parent.Window.MainViewMode = False
+			# self.parent.Window.MainViewMode = False
 			self.parent.Window.DrawData["MouseInfo"] = []
 			self.viewBtn.SetLabel("Main Core View")
 			self.OnAgeViewAdjust(evt)
@@ -3044,7 +3055,7 @@ class AgeDepthPanel():
 		else :
 			self.ageX = self.parent.Window.splicerX 
 			self.parent.Window.splicerX = self.X
-			self.parent.Window.MainViewMode = True 
+			# self.parent.Window.MainViewMode = True 
 			self.parent.Window.DrawData["MouseInfo"] = []
 			self.viewBtn.SetLabel("Age Model View")
 		self.parent.Window.UpdateDrawing()
@@ -3454,7 +3465,7 @@ class PreferencesPanel():
 		self.parent = parent
 		self.addItemsInFrame()
 		self.prevSelected = 0
-		self.depthmax = 20.0
+		self.visibleDepthInterval = 20.0
 
 	def OnActivateWindow(self, event):
 		if self.showSpliceWindow.IsChecked() == True : 
@@ -3503,15 +3514,43 @@ class PreferencesPanel():
 		self.parent.dataFrame.UpdateMINMAX(applyType, minRange, maxRange)
 		self.parent.Window.UpdateDrawing()
 
-	def OnChangeWidth(self, event):
-		idx = self.plotWidthSlider.GetValue() - 10
-		holeWidth = 200 + (idx * 10)
+	# def OnChangeHoleWidth(self, event):
+	# 	idx = self.holeWidthSlider.GetValue() - 10
+	# 	holeWidth = 200 + (idx * 10) - 50 # leave 50 for image
+	# 	self.parent.Window.holeWidth = holeWidth
+	# 	self.parent.Window.spliceHoleWidth = holeWidth
+	# 	self.parent.Window.logHoleWidth = holeWidth
+	# 	if event == None :
+	# 		return
+	# 	self.parent.Window.UpdateDrawing()
 
-		self.parent.Window.holeWidth = holeWidth
-		self.parent.Window.spliceHoleWidth = holeWidth
-		self.parent.Window.logHoleWidth = holeWidth
-		if event == None :
+	def OnChangePlotWidth(self, event):
+		idx = self.plotWidthSlider.GetValue()
+		plotWidth = 100 + (idx * 2) # width range: 100-300px
+		self.parent.Window.plotWidth = plotWidth
+		if event is None:
 			return
+		self.parent.Window.UpdateDrawing()
+		
+	def OnChangeImageWidth(self, event):
+		idx = self.imageWidthSlider.GetValue()
+		imageWidth = 30 + (idx * 2) # width range: 30-230px
+		self.parent.Window.coreImageWidth = imageWidth
+		if event is None:
+			return
+		self.parent.Window.InvalidateImages() # wx.Images must be recreated at appropriate width
+		self.parent.Window.UpdateDrawing()
+
+	def OnChangeImageStyle(self, event):
+		style_idx = self.imageStyleChoice.GetSelection()
+		self.parent.Window.UpdateImageStyle(style_idx)
+		# disable width slider if aspect ratio style is selected
+		enableWidthControls = False if style_idx == 2 else True
+		self.imageWidthSlider.Enable(enableWidthControls)
+		self.iwsLabel.Enable(enableWidthControls)
+		if event is None:
+			return
+		self.parent.Window.InvalidateImages() # wx.Images must be recreated with new style
 		self.parent.Window.UpdateDrawing()
 
 	def OnChangeRulerUnits(self, evt):
@@ -3521,15 +3560,16 @@ class PreferencesPanel():
 	def OnRulerOneScale(self, event):
 		idx = self.depthZoomSlider.GetValue()
 
-		#self.parent.Window.length = 60 + (idx * 2)
-		min = self.parent.Window.rulerStartDepth
-		max = min + self.depthmax 
-		if event == None : 
-			max = min + self.depthmax
-		x = (self.parent.Window.Height - self.parent.Window.startDepth) * self.parent.Window.gap
-		self.parent.Window.length = idx * x / (max - min) * 1.0
-		if event == None :
+		#self.parent.Window.pixPerMeter = 60 + (idx * 2)
+		minDepth = self.parent.Window.rulerStartDepth
+		maxDepth = minDepth + self.visibleDepthInterval 
+		if event == None: 
+			maxDepth = minDepth + self.visibleDepthInterval
+		x = (self.parent.Window.Height - self.parent.Window.startDepthPix)
+		self.parent.Window.pixPerMeter = idx * x / (maxDepth - minDepth) * 1.0
+		if event == None:
 			return
+		self.parent.Window.InvalidateImages()
 		self.parent.Window.UpdateDrawing()
 
 	def OnTieShiftScale(self, event):
@@ -3546,19 +3586,32 @@ class PreferencesPanel():
 		self.parent.Window.UpdateDrawing()
 
 	def OnDepthViewAdjust(self, event):
-		min = float(self.depthRangeMin.GetValue())
-		max = float(self.depthRangeMax.GetValue())
-		if min >= max :
+		minDepth = float(self.depthRangeMin.GetValue())
+		maxDepth = float(self.depthRangeMax.GetValue())
+		if minDepth >= maxDepth:
 			return
-		self.depthmax = max
+		self.visibleDepthInterval = maxDepth - minDepth
 		self.depthZoomSlider.SetValue(1)
 		
 		updateScroll = event is not None
-		self.parent.OnUpdateDepthRange(min, max, updateScroll)
+		self.parent.OnUpdateDepthRange(minDepth, maxDepth, updateScroll)
 		
 	def OnShowSectionDepths(self, event):
 		self.parent.Window.showSectionDepths = self.showSectionDepths.IsChecked()
 		self.parent.Window.UpdateDrawing()
+
+	def OnShowCoreImages(self, event):
+		self.parent.Window.showCoreImages = self.showCoreImages.IsChecked()
+		self.EnableCoreImageDisplayModeChoice(self.showCoreImages.IsChecked())
+		self.parent.Window.UpdateDrawing()
+
+	def OnCoreImageDisplayMode(self, event):
+		asDatatype = True if self.coreImageDisplayMode.GetSelection() == 1 else 0
+		self.parent.Window.showImagesAsDatatype = asDatatype
+		self.parent.Window.UpdateDrawing()
+
+	def EnableCoreImageDisplayModeChoice(self, enable):
+		self.coreImageDisplayMode.Enable(enable)
 
 	def OnShowAffineShiftInfo(self, event):
 		self.parent.Window.showAffineShiftInfo = self.showAffineShiftInfo.IsChecked()
@@ -3575,7 +3628,20 @@ class PreferencesPanel():
 	def OnShowOutOfRangeData(self, event):
 		self.parent.Window.showOutOfRangeData = self.showOutOfRangeData.IsChecked()
 		self.parent.Window.UpdateDrawing()
-		
+
+	def OnShowColorLegend(self, event):
+		self.parent.Window.showColorLegend = self.showColorLegend.IsChecked()
+		self.parent.Window.UpdateDrawing()
+
+	def OnDisplayOrderButton(self, event):
+		curDisplayOrder = list(self.parent.Window.layoutManager.getDatatypeOrder()) # copy
+		doDlg = dialog.DisplayOrderDialog(self.parent, curDisplayOrder)
+		pos = self.displayOrderButton.GetScreenPositionTuple()
+		doDlg.SetPosition(pos)
+		if doDlg.ShowModal() == wx.ID_OK:
+			self.parent.Window.layoutManager.setDatatypeOrder(list(doDlg.displayOrder)) # copy
+			self.parent.Window.UpdateDrawing()
+	
 	# def OnShowLogShiftArrows(self, event):
 	# 	self.parent.Window.LogClue = self.showLogShiftArrows.IsChecked()
 	# 	self.parent.Window.UpdateDrawing()
@@ -3597,6 +3663,10 @@ class PreferencesPanel():
 		self.showPlotLines.SetValue(True)
 		self.showSectionDepths = wx.CheckBox(viewPanel, -1, "Show section boundaries and numbers")
 		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowSectionDepths, self.showSectionDepths)
+		self.showCoreImages = wx.CheckBox(viewPanel, -1, "Show core images")
+		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowCoreImages, self.showCoreImages)
+		self.coreImageDisplayMode = wx.Choice(viewPanel, -1, choices=('next to plots','as a datatype'))
+		self.mainPanel.Bind(wx.EVT_CHOICE, self.OnCoreImageDisplayMode, self.coreImageDisplayMode)
 		self.showAffineShiftInfo = wx.CheckBox(viewPanel, -1, "Show core shift direction and distance")
 		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowAffineShiftInfo, self.showAffineShiftInfo)
 		self.showAffineTieArrows = wx.CheckBox(viewPanel, -1, "Show core tie arrows")
@@ -3605,18 +3675,32 @@ class PreferencesPanel():
 		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowCoreInfo, self.showCoreInfo)
 		self.showOutOfRangeData = wx.CheckBox(viewPanel, -1, "Show data ranging beyond hole width")
 		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowOutOfRangeData, self.showOutOfRangeData)
+		self.showColorLegend = wx.CheckBox(viewPanel, -1, "Show plot color legend")
+		self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowColorLegend, self.showColorLegend)
+		# todo: group by datatype/hole checkbox
+		self.displayOrderButton = wx.Button(viewPanel, -1, "Display Order...")
+		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnDisplayOrderButton, self.displayOrderButton)
+
 		# self.showLogShiftArrows = wx.CheckBox(viewPanel, -1, "Show log shift arrows")
 		# self.mainPanel.Bind(wx.EVT_CHECKBOX, self.OnShowLogShiftArrows, self.showLogShiftArrows)
 
 		viewSizer.Add(self.showSpliceWindow, 0, wx.BOTTOM, 5)
 		# viewSizer.Add(self.indSpliceScroll, 0, wx.LEFT, 20)
 		viewSizer.Add(self.showSectionDepths, 0, wx.BOTTOM, 5)
+
+		imageOptionSizer = wx.BoxSizer(wx.HORIZONTAL)
+		imageOptionSizer.Add(self.showCoreImages, 0, wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, 3)
+		imageOptionSizer.Add(self.coreImageDisplayMode, 0, wx.ALIGN_CENTER_VERTICAL)
+		viewSizer.Add(imageOptionSizer, 0, wx.BOTTOM, 5)
+		
 		viewSizer.Add(self.showAffineShiftInfo, 0, wx.BOTTOM, 5)
 		viewSizer.Add(self.showAffineTieArrows, 0, wx.BOTTOM, 5)
 		viewSizer.Add(self.showCoreInfo, 0, wx.BOTTOM, 5)
 		# viewSizer.Add(self.showLogShiftArrows, 0, wx.BOTTOM, 5)
 		viewSizer.Add(self.showOutOfRangeData, 0, wx.BOTTOM, 5)
 		viewSizer.Add(self.showPlotLines, 0, wx.BOTTOM, 5)
+		viewSizer.Add(self.showColorLegend, 0, wx.BOTTOM, 5)
+		viewSizer.Add(self.displayOrderButton, 0, wx.BOTTOM, 5)
 		viewPanel.SetSizer(viewSizer)
 		vbox_top.Add(viewPanel, 0, wx.BOTTOM | wx.EXPAND, 10)
 
@@ -3705,18 +3789,42 @@ class PreferencesPanel():
 		varApply = wx.Button(varScalePanel, -1, "Apply Range")
 		varScaleSizer.Add(varApply, 0, wx.ALIGN_CENTER | wx.BOTTOM, 10)
 		self.mainPanel.Bind(wx.EVT_BUTTON, self.OnChangeMinMax, varApply)
-
-		self.plotWidthSlider = wx.Slider(varScalePanel, -1, value=10, minValue=1, maxValue=20)
-		self.mainPanel.Bind(wx.EVT_COMMAND_SCROLL, self.OnChangeWidth, self.plotWidthSlider)
-		varSliderSizer = wx.BoxSizer(wx.HORIZONTAL)
-		varSliderSizer.Add(wx.StaticText(varScalePanel, -1, "Zoom"))
-		varSliderSizer.Add(self.plotWidthSlider, 1, wx.EXPAND)
-		varSliderSizer.Add(wx.StaticText(varScalePanel, -1, "Width*2"))
-
-		varScaleSizer.Add(varSliderSizer, 0, wx.EXPAND)
-
 		varScalePanel.SetSizer(varScaleSizer)
 		vbox_top.Add(varScalePanel, 0, wx.BOTTOM | wx.EXPAND, 10)
+
+		# Hole Width Slider
+		# self.holeWidthSlider = wx.Slider(self.mainPanel, -1, value=10, minValue=1, maxValue=20)
+		# self.mainPanel.Bind(wx.EVT_COMMAND_SCROLL, self.OnChangeHoleWidth, self.holeWidthSlider)
+		# holeWidthSliderSizer = wx.BoxSizer(wx.HORIZONTAL)
+		# holeWidthSliderSizer.Add(wx.StaticText(self.mainPanel, -1, "Hole Width"))
+		# holeWidthSliderSizer.Add(self.holeWidthSlider, 1, wx.EXPAND)
+		# vbox_top.Add(holeWidthSliderSizer, 0, wx.EXPAND | wx.BOTTOM, 10) # no longer used, I believe 7/30/2020
+
+		# Plot Width Slider
+		self.plotWidthSlider = wx.Slider(self.mainPanel, -1, value=0, minValue=0, maxValue=100)
+		self.mainPanel.Bind(wx.EVT_COMMAND_SCROLL, self.OnChangePlotWidth, self.plotWidthSlider)
+		plotWidthSliderSizer = wx.BoxSizer(wx.HORIZONTAL)
+		plotWidthSliderSizer.Add(wx.StaticText(self.mainPanel, -1, "Plot Width"))
+		plotWidthSliderSizer.Add(self.plotWidthSlider, 1, wx.EXPAND)
+		vbox_top.Add(plotWidthSliderSizer, 0, wx.EXPAND | wx.BOTTOM, 20)
+
+		# TODO: staticboxsizer for image options?
+		# Image Display Style - all (stretch/squeeze), middle third, preserve aspect ratio
+		imageStyleSizer = wx.BoxSizer(wx.HORIZONTAL)
+		self.imageStyleChoice = wx.Choice(self.mainPanel, -1, choices=["Full Width", "Middle Third", "Preserve Aspect Ratio"])
+		self.mainPanel.Bind(wx.EVT_CHOICE, self.OnChangeImageStyle, self.imageStyleChoice)
+		imageStyleSizer.Add(wx.StaticText(self.mainPanel, -1, "Image Style"))
+		imageStyleSizer.Add(self.imageStyleChoice)
+		vbox_top.Add(imageStyleSizer, 0, wx.BOTTOM, 10)
+
+		# Image Width Slider
+		self.imageWidthSlider = wx.Slider(self.mainPanel, -1, value=0, minValue=0, maxValue=100)
+		self.mainPanel.Bind(wx.EVT_COMMAND_SCROLL, self.OnChangeImageWidth, self.imageWidthSlider)
+		imageWidthSliderSizer = wx.BoxSizer(wx.HORIZONTAL)
+		self.iwsLabel = wx.StaticText(self.mainPanel, -1, "Image Width")
+		imageWidthSliderSizer.Add(self.iwsLabel)
+		imageWidthSliderSizer.Add(self.imageWidthSlider, 1, wx.EXPAND)
+		vbox_top.Add(imageWidthSliderSizer, 0, wx.EXPAND | wx.BOTTOM, 10)
 
 		# Color Set
 		colorButton = wx.Button(self.mainPanel, -1, "Change Color Set", size=(290,25))

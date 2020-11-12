@@ -59,7 +59,7 @@ def opj(path):
 class MainFrame(wx.Frame):
 	def __init__(self, winsize, user):
 		wx.Frame.__init__(self, None, -1, "Correlator " + vers.ShortVersion,
-						 wx.Point(0,100), winsize)
+						 wx.Point(0,100), winsize, style=wx.DEFAULT_FRAME_STYLE | wx.FRAME_FLOAT_ON_PARENT)
 
 		self.statusBar = self.CreateStatusBar()
 
@@ -70,7 +70,7 @@ class MainFrame(wx.Frame):
 		self.scroll = 1 
 		self.half = (self.Width / 2) - 32 
 		# make the menu
-		self.SetMenuBar( self.CreateMenu() )
+		self.SetMenuBar(self.CreateMenu())
 		
 		self.sectionSummary = None
 		self.affineManager = AffineController(self)
@@ -318,6 +318,14 @@ class MainFrame(wx.Frame):
 		self.Bind(wx.EVT_MENU, self.OnAbout, self.miAbout)
 		menuBar.Append(menuHelp, "&Help")
 
+		# Debug
+		menuDebug = wx.Menu()
+		self.miDebugShowBounds = menuDebug.AppendCheckItem(-1, "Show Plot Bounds", "Show colored lines indicating bounds of hole plot rectangles, etc")
+		self.Bind(wx.EVT_MENU, self._debugShowBounds, self.miDebugShowBounds)
+		self.miDebugShowFPS = menuDebug.AppendCheckItem(-1, "Show Frames Per Second (FPS)", "Show frames drawn per second...move mouse continuously for meaningful values")
+		self.Bind(wx.EVT_MENU, self._debugShowFPS, self.miDebugShowFPS)
+		menuBar.Append(menuDebug, "&Debug")
+
 		# self.OnDisableMenu(0, False)
 
 		# bind keystrokes to the frame
@@ -514,13 +522,13 @@ class MainFrame(wx.Frame):
 		self.logFileptr = global_logFile
 
 	def SetPT_SIZEUP(self, evt):
-		self.Window.DiscretetSize = self.Window.DiscretetSize + 1
+		self.Window.DiscreteSize = self.Window.DiscreteSize + 1
 		self.Window.UpdateDrawing()
 
 	def SetPT_SIZEDOWN(self, evt):
-		self.Window.DiscretetSize = self.Window.DiscretetSize - 1
-		if self.Window.DiscretetSize < 1:
-			self.Window.DiscretetSize = 1
+		self.Window.DiscreteSize = self.Window.DiscreteSize - 1
+		if self.Window.DiscreteSize < 1:
+			self.Window.DiscreteSize = 1
 		self.Window.UpdateDrawing()
 
 	def SetTIE_SIZEUP(self, evt):
@@ -549,7 +557,7 @@ class MainFrame(wx.Frame):
 		size = self.Window.stdFont.GetPointSize() + 1
 		self.Window.stdFont.SetPointSize(size)
 		
-		self.Window.startDepth = self.Window.startDepth + 5
+		self.Window.startDepthPix = self.Window.startDepthPix + 5
 		self.Window.startAgeDepth = self.Window.startAgeDepth + 5
 		self.Window.UpdateDrawing()
 		
@@ -557,7 +565,7 @@ class MainFrame(wx.Frame):
 		size = self.Window.stdFont.GetPointSize() - 1
 		self.Window.stdFont.SetPointSize(size)
 		
-		self.Window.startDepth = self.Window.startDepth - 5
+		self.Window.startDepthPix = self.Window.startDepthPix - 5
 		self.Window.startAgeDepth = self.Window.startAgeDepth -5		
 		self.Window.UpdateDrawing()
 		
@@ -569,6 +577,14 @@ class MainFrame(wx.Frame):
 	def UseNarrowScrollbars(self, evt):
 		self.Window.ScrollSize = 15
 		self.UPDATESCROLL()	
+		self.Window.UpdateDrawing()
+
+	def _debugShowBounds(self, evt):
+		self.Window.showBounds = self.miDebugShowBounds.IsChecked()
+		self.Window.UpdateDrawing()
+
+	def _debugShowFPS(self, evt):
+		self.Window.showFPS = self.miDebugShowFPS.IsChecked()
 		self.Window.UpdateDrawing()
 	
 	# scrollTuple: (bitmap, x, y)
@@ -615,15 +631,16 @@ class MainFrame(wx.Frame):
 		self.compositePanel.OnUpdateDepth(depth)
 		
 	# Preferences "Depth Ruler Scale" min/max changed
-	def OnUpdateDepthRange(self, min, max, updateScroll=True):
-		self.Window.rulerStartDepth = min
-		self.Window.SPrulerStartDepth = min
-		x = (self.Window.Height - self.Window.startDepth) * self.Window.gap
-		self.Window.length = x / (max - min) * 1.0
+	def OnUpdateDepthRange(self, minDepth, maxDepth, updateScroll=True):
+		self.Window.rulerStartDepth = minDepth
+		self.Window.SPrulerStartDepth = minDepth
+		x = (self.Window.Height - self.Window.startDepthPix)
+		self.Window.pixPerMeter = x / float(maxDepth - minDepth)
 
 		if updateScroll:
 			self.Window.UpdateScroll(1)
 			self.Window.UpdateScroll(2)
+		self.Window.InvalidateImages()
 		self.Window.UpdateDrawing()
 		self.Window.UpdateDrawing() # brgtodo 9/6/2014 core area doesn't update completely without, why?
 		
@@ -631,7 +648,7 @@ class MainFrame(wx.Frame):
 	def OnUpdateStartDepth(self, startDepth, updateScroll=True):
 		self.Window.rulerStartDepth = startDepth
 		self.Window.SPrulerStartDepth = startDepth
-		# no need to mess with self.Window.length, keep it as is
+		# no need to mess with self.Window.pixPerMeter, keep it as is
 		if updateScroll:
 			self.Window.UpdateScroll(1)
 			self.Window.UpdateScroll(2)
@@ -811,10 +828,11 @@ class MainFrame(wx.Frame):
 		spliceChange = self.spliceManager.isDirty()
 		return affineChange or spliceChange
 
+	# show/hide splice window
 	def OnActivateWindow(self, event):
 		if self.Window.spliceWindowOn == 1:
 			self.Window.spliceWindowOn = 0
-			self.Window.splicerBackX = self.Window.splicerX
+			self.Window.splicerBackX = self.Window.splicerX # save old splicerX
 			self.Window.splicerX = self.Window.Width + 45 
 			self.optPanel.showSpliceWindow.SetValue(False)
 			# self.optPanel.indSpliceScroll.Enable(False)
@@ -1482,7 +1500,9 @@ class MainFrame(wx.Frame):
 
 		self.WritePreferenceItem("startdepth", self.Window.rulerStartDepth, f)
 		self.WritePreferenceItem("secondstartdepth", self.Window.SPrulerStartDepth, f)
-		self.WritePreferenceItem("datawidth", self.optPanel.plotWidthSlider.GetValue(), f)
+		# self.WritePreferenceItem("datawidth", self.optPanel.holeWidthSlider.GetValue(), f)
+		self.WritePreferenceItem("plotwidth", self.optPanel.plotWidthSlider.GetValue(), f)
+		self.WritePreferenceItem("imagewidth", self.optPanel.imageWidthSlider.GetValue(), f)
 		self.WritePreferenceItem("rulerunits", self.Window.GetRulerUnitsStr(), f)
 		self.WritePreferenceItem("rulerscale", self.optPanel.depthZoomSlider.GetValue(), f)
 
@@ -1493,17 +1513,23 @@ class MainFrame(wx.Frame):
 		self.WritePreferenceItem("tiewidth", self.Window.tieline_width, f)
 		self.WritePreferenceItem("splicewindow", self.Window.spliceWindowOn, f)
 		#self.WritePreferenceItem("fontsize", self.Window.stdFont.GetPointSize(), f) # see 11/2/2013 brg
-		self.WritePreferenceItem("fontstartdepth", self.Window.startDepth, f)
+		self.WritePreferenceItem("fontstartdepth", self.Window.startDepthPix, f)
 		self.WritePreferenceItem("scrollsize", self.Window.ScrollSize, f)
 
 		showSectionDepths = 1 if self.Window.showSectionDepths == True else 0
 		self.WritePreferenceItem("showSectionDepths", showSectionDepths, f)
+
+		showCoreImages = 1 if self.Window.showCoreImages == True else 0
+		self.WritePreferenceItem("showCoreImages", showCoreImages, f)
 
 		showCoreInfo = 1 if self.Window.showCoreInfo == True else 0
 		self.WritePreferenceItem("showCoreInfo", showCoreInfo, f)
 
 		showOutOfRangeData = 1 if self.Window.showOutOfRangeData == True else 0
 		self.WritePreferenceItem("showOutOfRangeData", showOutOfRangeData, f)
+
+		showColorLegend = 1 if self.Window.showColorLegend == True else 0
+		self.WritePreferenceItem("showColorLegend", showColorLegend, f)
 
 		showlineInt = 1 if self.Window.showHoleGrid == True else 0
 		self.WritePreferenceItem("showline", showlineInt, f)
@@ -2534,7 +2560,7 @@ class MainFrame(wx.Frame):
 		self.config = ConfigParser.ConfigParser()
 		self.config.read(cfgfile)
 		
-		scroll_start = self.Window.startDepth * 0.7
+		scroll_start = self.Window.startDepthPix * 0.7
 		#l = []
 
 		#self.Width, self.Height = self.GetClientSizeTuple()
@@ -2735,7 +2761,7 @@ class MainFrame(wx.Frame):
 			str_temp = self.config.get("applications", "fontstartdepth")
 			if len(str_temp) > 0:
 				conf_value = float ( str_temp )			
-				self.Window.startDepth = conf_value
+				self.Window.startDepthPix = conf_value
 				self.Window.startAgeDepth = conf_value
 		
 		if self.config.has_option("applications", "showline"):
@@ -2753,6 +2779,12 @@ class MainFrame(wx.Frame):
 			if len(str_temp) > 0:
 				self.Window.showSectionDepths = True if str_temp == '1' else False 
 				self.optPanel.showSectionDepths.SetValue(self.Window.showSectionDepths)
+
+		if self.config.has_option("applications", "showCoreImages"):
+			str_temp = self.config.get("applications", "showCoreImages")
+			if len(str_temp) > 0:
+				self.Window.showCoreImages = True if str_temp == '1' else False 
+				self.optPanel.showCoreImages.SetValue(self.Window.showCoreImages)
 
 		if self.config.has_option("applications", "showAffineShiftInfo"):
 			str_temp = self.config.get("applications", "showAffineShiftInfo")
@@ -2777,6 +2809,12 @@ class MainFrame(wx.Frame):
 			if len(str_temp) > 0:
 				self.Window.showOutOfRangeData = True if str_temp == '1' else False 
 				self.optPanel.showOutOfRangeData.SetValue(self.Window.showOutOfRangeData)
+
+		if self.config.has_option("applications", "showColorLegend"):
+			str_temp = self.config.get("applications", 'showColorLegend')
+			if len(str_temp) > 0:
+				self.Window.showColorLegend = True if str_temp == '1' else False
+				self.optPanel.showColorLegend.SetValue(self.Window.showColorLegend)
 
 		if self.config.has_option("applications", "scrollsize"):
 			str_temp = self.config.get("applications", "scrollsize")
@@ -2925,12 +2963,28 @@ class MainFrame(wx.Frame):
 			if len(str_temp) > 0:
 				self.Directory = str_temp
 
-		if self.config.has_option("applications", "datawidth"):
-			str_temp = self.config.get("applications", "datawidth")
+		# total hole width - still used for splice and log, supplanted
+		# by coreImageWidth and plotWidth for composite area
+		# if self.config.has_option("applications", "datawidth"):
+		# 	str_temp = self.config.get("applications", "datawidth")
+		# 	if len(str_temp) > 0:
+		# 		conf_value = int(str_temp)
+		# 		self.optPanel.holeWidthSlider.SetValue(conf_value)
+		# 		self.optPanel.OnChangeHoleWidth(None)
+
+		if self.config.has_option("applications", "plotwidth"):
+			str_temp = self.config.get("applications", "plotwidth")
 			if len(str_temp) > 0:
-				conf_value = int ( str_temp )
+				conf_value = int(str_temp)
 				self.optPanel.plotWidthSlider.SetValue(conf_value)
-				self.optPanel.OnChangeWidth(None)
+				self.optPanel.OnChangePlotWidth(None)
+
+		if self.config.has_option("applications", "imagewidth"):
+			str_temp = self.config.get("applications", "imagewidth")
+			if len(str_temp) > 0:
+				conf_value = int(str_temp)
+				self.optPanel.imageWidthSlider.SetValue(conf_value)
+				self.optPanel.OnChangeImageWidth(None)
 
 		img = wx.Image(opj("images/scrollbutton1.jpg"))
 		img.Rescale(self.Window.ScrollSize, img.GetHeight())
